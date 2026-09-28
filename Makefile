@@ -1,10 +1,13 @@
 MVNW := bash ./mvnw
 ENV_FILE := $(CURDIR)/.env
 .DEFAULT_GOAL := verify
-.PHONY: verify install package image config-check up down run integration-bootstrap
+.PHONY: verify install package image config-check up down run integration-bootstrap integration
 
 verify:
 	$(MVNW) -B -ntp clean verify
+
+integration:
+	bash scripts/test-postgres.sh
 
 install:
 	$(MVNW) -B -ntp clean install
