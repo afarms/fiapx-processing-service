@@ -83,7 +83,10 @@ public final class FfmpegMediaGateway implements MediaGateway {
         public String sha256() { return hash; }
         public int frameCount() { return frames; }
         public synchronized void close() throws IOException {
-            if (!closed) { clean(directory); closed = true; slot.release(); }
+            if (!closed) {
+                try { clean(directory); }
+                finally { closed = true; slot.release(); }
+            }
         }
     }
 }

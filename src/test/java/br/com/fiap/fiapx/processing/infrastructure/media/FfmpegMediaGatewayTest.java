@@ -39,6 +39,25 @@ class FfmpegMediaGatewayTest {
         assertFalse(Files.exists(completed)); assertTrue(Files.exists(input));
         try (var next = gateway.extract(input, () -> true)) { assertEquals(1, next.frameCount()); }
     }
+    @Test void cleanupFailureReleasesCapacityExactlyOnceAndPreservesTheError() throws Exception {
+        var gateway = gateway(successful(new ArrayList<>()));
+        Path input = input();
+        var result = gateway.extract(input, () -> true);
+        Path unexpected = Files.writeString(result.zip().getParent().resolve("unexpected.txt"), "preserve");
+
+        assertThrows(DirectoryNotEmptyException.class, () -> {
+            try (result) { assertTrue(Files.exists(result.zip())); }
+        });
+        assertTrue(Files.exists(unexpected));
+        try (var next = gateway.extract(input, () -> true)) {
+            assertEquals(1, next.frameCount());
+            result.close();
+            result.close();
+            assertThrows(IOException.class, () -> gateway.extract(input, () -> true));
+        }
+        try (var following = gateway.extract(input, () -> true)) { assertEquals(1, following.frameCount()); }
+    }
+
     @Test void cleansPartialsOnMediaOrDependencyFailureAndDoesNotTouchOtherAttempts() throws Exception {
         Path input = input(), other = temporary.resolve("work/attempt-other"); Files.createDirectories(other);
         Files.writeString(other.resolve("frames.zip"), "active");
