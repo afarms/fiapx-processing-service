@@ -1,12 +1,14 @@
 # Plano de validação AWS do processamento
 
-Estado: procedimento preparado; execução remota ainda pendente. Os testes locais não comprovam este plano. Antes da execução, registrar autorização para os recursos/dados abaixo e conferir o plano Terraform real. Não executar apply, enviar mensagens ou remover objetos como parte dos testes locais.
+Estado: procedimento preparado; execução remota adiada até a infraestrutura e as aplicações do fluxo estarem rodando na cloud. Os testes locais não comprovam este plano. Na retomada, adaptar o harness ao ambiente implantado, registrar autorização para os recursos/dados abaixo e conferir o estado Terraform real. Não executar apply, enviar mensagens ou remover objetos como parte dos testes locais.
+
+Preparação executável em [aws-harness.md](aws-harness.md): manifesto offline, Compose isolado com dois workers e imagem de teste com pontos antes do download/mídia/ACK e depois do PUT verificado. Os ganchos não substituem os cenários restantes nem evidência remota.
 
 ## Recursos e preparação
 
 Região `us-east-1`; bucket privado `fiapx-media-files`; trabalho `fiapx-processing-work` e `fiapx-processing-work-dlq`; resultados `fiapx-videos-events` e `fiapx-videos-events-dlq`. URLs/ARNs efetivos devem vir dos outputs Terraform da conta conferida, nunca ser inferidos de um exemplo. Roles de aplicação: `fiapx-video-local` e `fiapx-processing-local`, via sessões temporárias separadas. Identidade real fornece duas contas de teste e seus tokens, mantidos fora de logs/Git.
 
-O incremento Terraform de resultados/role precisa ser provisionado antes do ensaio. Conferir que o workflow de infraestrutura pode executar apply no PR. Revisar o diff para duas filas de resultados, redrive/TLS, role do worker e policies; sem destruição/substituição de recursos existentes. Não usar credencial de provisionamento nas aplicações.
+O incremento Terraform de resultados/role foi provisionado e integrado. Conferir novamente os outputs e o estado efetivo antes do ensaio; o workflow de infraestrutura pode executar apply no PR. Não usar credencial de provisionamento nas aplicações.
 
 Reservar janela exclusiva para estas filas: nenhuma aplicação ou carga alheia deve consumi-las. Conferir ausência de mensagens visíveis, invisíveis e atrasadas antes de começar. Se existir carga desconhecida, interromper e definir filas isoladas com permissões específicas; não purgar filas nem consumir dados alheios para abrir espaço.
 

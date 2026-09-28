@@ -1,6 +1,19 @@
 MVNW := bash ./mvnw
 ENV_FILE := $(CURDIR)/.env
 .DEFAULT_GOAL := verify
+
+.PHONY: harness-image harness-check harness-config harness-fixtures
+harness-image:
+	docker build --target aws-harness -t fiapx-processing-aws-harness:local .
+
+harness-check:
+	python -m unittest discover -s scripts/tests -p 'test_*.py'
+
+harness-config:
+	docker compose --env-file "$(HARNESS_RUN_DIRECTORY)/compose.env" -f compose.aws-harness.yml config --quiet
+
+harness-fixtures:
+	bash scripts/harness-fixtures.sh
 .PHONY: verify install package image config-check up down run integration-bootstrap integration integration-media
 
 verify:

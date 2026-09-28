@@ -11,7 +11,7 @@ FROM build AS media-test
 RUN apk add --no-cache ffmpeg=8.1.2-r0
 CMD ["./mvnw", "-B", "-ntp", "-Pmedia-integration", "verify"]
 
-FROM eclipse-temurin:21.0.12_8-jre-alpine-3.24 AS runtime
+FROM eclipse-temurin:21.0.12_8-jre-alpine-3.24 AS runtime-base
 WORKDIR /app
 RUN apk add --no-cache ffmpeg=8.1.2-r0 \
     && addgroup -S -g 10001 app && adduser -S -D -H -u 10001 -G app app \
@@ -22,3 +22,15 @@ EXPOSE 8082
 HEALTHCHECK --interval=15s --timeout=5s --start-period=60s --retries=5 \
     CMD wget -q -O /dev/null "http://127.0.0.1:${SERVER_PORT:-8082}/actuator/health/readiness" || exit 1
 ENTRYPOINT ["java", "-jar", "/app/app.jar"]
+
+# Test-only entrypoint and adapters. The default runtime stage excludes these classes.
+FROM build AS harness-build
+RUN mkdir /harness && cd /harness && jar xf /workspace/target/app.jar
+
+FROM runtime-base AS aws-harness
+COPY --from=harness-build --chown=10001:10001 /harness/BOOT-INF/classes /app/harness/classes
+COPY --from=harness-build --chown=10001:10001 /harness/BOOT-INF/lib /app/harness/lib
+COPY --from=build --chown=10001:10001 /workspace/target/test-classes/br/com/fiap/fiapx/harness /app/harness/classes/br/com/fiap/fiapx/harness
+ENTRYPOINT ["java", "-cp", "/app/harness/classes:/app/harness/lib/*", "br.com.fiap.fiapx.harness.AwsHarnessApplication"]
+
+FROM runtime-base AS runtime

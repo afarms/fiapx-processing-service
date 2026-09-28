@@ -442,4 +442,66 @@ class ProcessingPostgresIT {
         assertEquals(1,jdbc.queryForObject("SELECT count(*) FROM processing_inbox WHERE completed_at IS NOT NULL",Integer.class));
         assertEquals(2,count("processing_outbox"));
     }
+
+    @Test void harnessStopsAckAfterRealTerminalCommitAndReplayDoesNotRunMedia() throws Exception {
+        var request=request();
+        Path control=temporary.resolve(UUID.randomUUID().toString());
+        Files.createDirectories(control.resolve("allowed"));
+        Files.createFile(control.resolve("allowed").resolve(request.videoId().toString()));
+        Files.writeString(control.resolve("worker-a."+request.videoId()+".before-ack.arm"),"fail");
+        var adapters=new br.com.fiap.fiapx.harness.HarnessAdapters(new br.com.fiap.fiapx.harness.FaultControl(
+                control,"worker-a",java.time.Duration.ofSeconds(5)));
+        var sqs=mock(SqsClient.class);
+        when(sqs.receiveMessage(any(ReceiveMessageRequest.class))).thenReturn(ReceiveMessageResponse.builder().messages(
+                Message.builder().messageId("harness-delivery").receiptHandle("private-receipt")
+                        .body(WorkMessageDecoderTest.envelope(request)).build()).build());
+        var media=mock(MediaGateway.class); var storage=mock(StoreProcessingResult.class);
+        when(storage.download(any(),any())).thenReturn(temporary.resolve("input"));
+        when(media.extract(any(),any())).thenThrow(new MediaFailure(FailureCode.INVALID_MEDIA));
+        try(var scheduler=Executors.newSingleThreadScheduledExecutor();
+            var consumer=new WorkConsumer((SqsClient)adapters.wrap(sqs),"https://sqs.us-east-1.amazonaws.com/123456789012/work",
+                new WorkMessageDecoder(context.getBean(JsonMapper.class),request.bucket()),
+                new ProcessWork(gateway,media,storage,limits()),gateway,limits(),scheduler,()->true)) {
+            consumer.poll();
+            verify(sqs,never()).deleteMessage(any(DeleteMessageRequest.class));
+            assertEquals("FAILED",jdbc.queryForObject("SELECT status FROM processing_jobs WHERE id=?",String.class,request.videoId()));
+            assertEquals(1,jdbc.queryForObject("SELECT count(*) FROM processing_outbox WHERE event_type='ProcessingFailed'",Integer.class));
+            assertTrue(Files.readString(control.resolve("events/worker-a.tsv")).contains("before-ack-reached"));
+            consumer.poll();
+            verify(sqs).deleteMessage(any(DeleteMessageRequest.class)); verify(media).extract(any(),any());
+            assertEquals(1,jdbc.queryForObject("SELECT media_attempts FROM processing_jobs WHERE id=?",Integer.class,request.videoId()));
+        }
+    }
+
+    @Test void harnessAfterPutPreservesSqlIntentAndResumesWithoutSecondPutOrMedia() throws Exception {
+        var request=request(); var claim=gateway.acquire(request);
+        var job=gateway.beginMedia(request.videoId(),claim.job().token());
+        Path control=temporary.resolve(UUID.randomUUID().toString());
+        Files.createDirectories(control.resolve("allowed"));
+        Files.createFile(control.resolve("allowed").resolve(request.videoId().toString()));
+        Files.writeString(control.resolve("worker-a."+request.videoId()+".after-put.arm"),"fail");
+        var adapters=new br.com.fiap.fiapx.harness.HarnessAdapters(new br.com.fiap.fiapx.harness.FaultControl(
+                control,"worker-a",java.time.Duration.ofSeconds(5)));
+        var objects=mock(ObjectStorageGateway.class);
+        var present=new java.util.concurrent.atomic.AtomicBoolean();
+        when(objects.present(any(),any())).thenAnswer(call->present.get());
+        doAnswer(call->{
+            assertEquals("RESULT_PENDING_STORAGE",jdbc.queryForObject("SELECT status FROM processing_jobs WHERE id=?",String.class,request.videoId()));
+            assertEquals(0,jdbc.queryForObject("SELECT count(*) FROM processing_outbox WHERE event_type='ProcessingCompleted'",Integer.class));
+            present.set(true); return null;
+        }).when(objects).store(any(),any(),any());
+        var files=mock(br.com.fiap.fiapx.processing.core.gateway.LocalArtifactsGateway.class);
+        when(files.find(any(),any())).thenReturn(Optional.of(temporary.resolve("zip")));
+        var storage=new StoreProcessingResult(gateway,(ObjectStorageGateway)adapters.wrap(objects),files);
+        var media=mock(MediaGateway.LocalMediaResult.class);
+        when(media.zip()).thenReturn(temporary.resolve("zip")); when(media.sizeBytes()).thenReturn(10L);
+        when(media.sha256()).thenReturn("a".repeat(64)); when(media.frameCount()).thenReturn(1);
+        assertThrows(IllegalStateException.class,()->storage.publish(job,media,()->true));
+        assertEquals("RESULT_PENDING_STORAGE",jdbc.queryForObject("SELECT status FROM processing_jobs WHERE id=?",String.class,request.videoId()));
+        expire(request.videoId()); var resumed=gateway.acquire(request);
+        assertEquals(JobStatus.COMPLETED,storage.recover(resumed.job(),()->true).status());
+        verify(objects).store(any(),any(),any());
+        assertEquals(1,jdbc.queryForObject("SELECT media_attempts FROM processing_jobs WHERE id=?",Integer.class,request.videoId()));
+        assertEquals(1,jdbc.queryForObject("SELECT count(*) FROM processing_outbox WHERE event_type='ProcessingCompleted'",Integer.class));
+    }
 }
