@@ -1,3 +1,5 @@
 databaseChangeLog:
   - include:
       file: db/changelog/changes/001-processing-jobs.sql
+  - include:
+      file: db/changelog/changes/002-artifact-cleanup.sql

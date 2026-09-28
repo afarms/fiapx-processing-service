@@ -13,6 +13,7 @@ import tools.jackson.databind.json.JsonMapper;
 import static org.mockito.Mockito.mock;
 
 class BeanConfigTest {
+    @org.junit.jupiter.api.io.TempDir java.nio.file.Path temporary;
     private final ApplicationContextRunner runner = new ApplicationContextRunner()
             .withUserConfiguration(BeanConfig.class)
             .withBean(JsonMapper.class, () -> JsonMapper.builder().build())
@@ -26,6 +27,23 @@ class BeanConfigTest {
                     throw new java.io.UncheckedIOException(failure);
                 }
             });
+
+    @Test
+    void composesOptionalStorageWithoutCallingAwsAndReleasesVolumeOnShutdown() throws Exception {
+        for (String profile : new String[]{"", "local-test-profile"}) {
+            var root=temporary.resolve(profile.isEmpty()?"default":"profile");
+            runner.withPropertyValues("storage.enabled=true", "storage.bucket=fiapx-media-test", "storage.local-directory="+root,
+                    "storage.aws-profile="+profile).run(context -> {
+                assertNull(context.getStartupFailure());
+                assertNotNull(context.getBean(br.com.fiap.fiapx.processing.core.usecase.StoreProcessingResult.class));
+                assertNotNull(context.getBean(br.com.fiap.fiapx.processing.core.usecase.CleanupProcessingArtifacts.class));
+                assertNotNull(context.getBean(software.amazon.awssdk.services.s3.S3Client.class));
+            });
+            try (var reopened=new br.com.fiap.fiapx.processing.infrastructure.storage.LocalProcessingArtifacts(root,1)) {
+                assertNotNull(reopened);
+            }
+        }
+    }
 
     @Test
     void startsCompositionWithRealApplicationDefaultsWithoutAwsCredentials() {

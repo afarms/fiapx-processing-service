@@ -31,6 +31,12 @@ processing:
   disk-reserve-bytes: ${PROCESSING_DISK_RESERVE_BYTES:3221225472}
   lease-seconds: ${PROCESSING_LEASE_SECONDS:120}
   heartbeat-seconds: ${PROCESSING_HEARTBEAT_SECONDS:30}
+storage:
+  enabled: ${PROCESSING_STORAGE_ENABLED:false}
+  bucket: ${PROCESSING_MEDIA_BUCKET:}
+  region: ${AWS_REGION:us-east-1}
+  aws-profile: ${PROCESSING_AWS_PROFILE:}
+  local-directory: ${PROCESSING_ARTIFACT_DIRECTORY:/app/.local/artifacts}
 management:
   endpoints:
     web:

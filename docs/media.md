@@ -32,6 +32,6 @@ make image
 
 ## Integrações pendentes
 
-S3, download com conferência de bytes/hash, intenção de escrita durável, recuperação após crash/restart e limpeza de órfãos referenciados ainda serão conectados. A limpeza atual abrange a chamada viva e não apaga arbitrariamente arquivos encontrados após restart. SQS, renovação de posse, publicação de eventos e ACK manual também permanecem pendentes. Nenhum endpoint público ou consumo de fila é ativado por este pipeline.
+O [armazenamento](storage.md) oferece download com conferência de bytes/hash, intenção de escrita durável, retenção do ZIP para recuperação após restart e limpeza de órfãos com consulta à persistência. O chamador deve reter o ZIP antes de fechar o resultado de mídia. A ligação ao consumidor SQS, renovação de posse, publicação de eventos, agendamento da limpeza e ACK manual permanecem pendentes. Nenhum endpoint público ou consumo de fila é ativado por este pipeline.
 
 Referências técnicas: [protocolos FFmpeg](https://ffmpeg.org/ffmpeg-protocols.html), [formatos e image2pipe](https://ffmpeg.org/ffmpeg-formats.html), [campos e saída do FFprobe](https://ffmpeg.org/ffprobe.html).

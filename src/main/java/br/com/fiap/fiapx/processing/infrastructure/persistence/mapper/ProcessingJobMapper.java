@@ -11,6 +11,7 @@ public final class ProcessingJobMapper {
 
     public String request(ProcessingRequest request) { return json.writeValueAsString(request); }
     public String result(ResultArtifact result) { return json.writeValueAsString(result); }
+    public ResultArtifact readResult(String result) { return json.readValue(result, ResultArtifact.class); }
 
     public ProcessingJob read(ProcessingJobEntity e) {
         return new ProcessingJob(new JobSnapshot(json.readValue(e.requestJson, ProcessingRequest.class),

@@ -1,6 +1,6 @@
 # FIAP X — Processamento
 
-Serviço independente para processamento assíncrono de vídeos. Implementados bootstrap, probes, persistência transacional de jobs/tentativas/inbox/outbox e pipeline local FFprobe/FFmpeg para PNGs em ZIP, com limites durante a produção. A imagem inclui FFmpeg 8.1.2; consumo/publicação SQS e armazenamento S3 ainda estão em implementação. Ver [contrato de persistência](docs/persistence.md) e [pipeline de mídia](docs/media.md).
+Serviço independente para processamento assíncrono de vídeos. Implementados bootstrap, probes, persistência transacional de jobs/tentativas/inbox/outbox, pipeline FFprobe/FFmpeg para PNGs em ZIP e adapters de armazenamento com verificação de integridade e recuperação de resultados. A imagem inclui FFmpeg 8.1.2; consumo/publicação SQS ainda está em implementação. Ver [contrato de persistência](docs/persistence.md), [pipeline de mídia](docs/media.md) e [armazenamento](docs/storage.md).
 
 ## Desenvolvimento local
 
