@@ -1,0 +1,126 @@
+name: ${HARNESS_RUN_ID:?Prepare a run manifest first}
+
+x-worker: &worker
+  image: fiapx-processing-aws-harness:local
+  profiles: [execution]
+  env_file: ${HARNESS_RUN_DIRECTORY:?Required}/worker.env
+  environment: &worker-environment
+    DB_URL: jdbc:postgresql://processing-db:5432/processing
+    DB_USERNAME: processing
+    DB_PASSWORD: ${HARNESS_PROCESSING_DB_PASSWORD:?Required}
+    PROCESSING_AWS_HARNESS_APPROVED: ${PROCESSING_AWS_HARNESS_APPROVED:-false}
+    PROCESSING_STORAGE_ENABLED: "true"
+    PROCESSING_MESSAGING_ENABLED: "true"
+    PROCESSING_MEDIA_BUCKET: ${HARNESS_BUCKET:?Required}
+    PROCESSING_WORK_QUEUE_URL: ${HARNESS_WORK_QUEUE:?Required}
+    PROCESSING_RESULT_QUEUE_URL: ${HARNESS_RESULT_QUEUE:?Required}
+    AWS_REGION: us-east-1
+    HARNESS_CONTROL_DIRECTORY: /control
+    SERVER_PORT: 8082
+    JAVA_TOOL_OPTIONS: -XX:MaxRAMPercentage=50.0
+  depends_on:
+    processing-db:
+      condition: service_healthy
+  read_only: true
+  tmpfs: ["/tmp:size=64m,mode=1777"]
+  cpus: 2
+  mem_limit: 1g
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  stop_grace_period: 30s
+
+services:
+  processing-db:
+    image: postgres:17.11-alpine3.24
+    environment:
+      POSTGRES_DB: processing
+      POSTGRES_USER: processing
+      POSTGRES_PASSWORD: ${HARNESS_PROCESSING_DB_PASSWORD:?Required}
+    volumes: [processing-db:/var/lib/postgresql/data]
+    healthcheck:
+      test: [CMD-SHELL, pg_isready -U processing -d processing]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+  video-db:
+    image: postgres:17.11-alpine3.24
+    environment:
+      POSTGRES_DB: video
+      POSTGRES_USER: video
+      POSTGRES_PASSWORD: ${HARNESS_VIDEO_DB_PASSWORD:?Required}
+    volumes: [video-db:/var/lib/postgresql/data]
+    healthcheck:
+      test: [CMD-SHELL, pg_isready -U video -d video]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+  worker-a:
+    <<: *worker
+    environment:
+      <<: *worker-environment
+      HARNESS_WORKER: worker-a
+    volumes:
+      - worker-a:/app/.local
+      - type: bind
+        source: ${HARNESS_RUN_DIRECTORY}/control
+        target: /control
+        bind:
+          create_host_path: false
+  worker-b:
+    <<: *worker
+    environment:
+      <<: *worker-environment
+      HARNESS_WORKER: worker-b
+    volumes:
+      - worker-b:/app/.local
+      - type: bind
+        source: ${HARNESS_RUN_DIRECTORY}/control
+        target: /control
+        bind:
+          create_host_path: false
+  video:
+    image: fiapx-video-service:local
+    profiles: [execution]
+    env_file: ${HARNESS_RUN_DIRECTORY}/video.env
+    environment:
+      DB_URL: jdbc:postgresql://video-db:5432/video
+      DB_USERNAME: video
+      DB_PASSWORD: ${HARNESS_VIDEO_DB_PASSWORD:?Required}
+      SERVER_PORT: 8080
+      MEDIA_BUCKET_NAME: ${HARNESS_BUCKET:?Required}
+      PROCESSING_QUEUE_URL: ${HARNESS_WORK_QUEUE:?Required}
+      VIDEOS_EVENTS_QUEUE_URL: ${HARNESS_RESULT_QUEUE:?Required}
+      AWS_REGION: us-east-1
+      UPLOAD_ENABLED: ${PROCESSING_AWS_HARNESS_APPROVED:-false}
+      UPLOAD_PUBLISHER_ENABLED: ${PROCESSING_AWS_HARNESS_APPROVED:-false}
+      PROCESSING_RESULTS_ENABLED: ${PROCESSING_AWS_HARNESS_APPROVED:-false}
+      PROCESSING_RECONCILE_ENABLED: ${PROCESSING_AWS_HARNESS_APPROVED:-false}
+      UPLOAD_CLEANUP_ENABLED: "false"
+      UPLOAD_TEMP_DIRECTORY: /app/.local/uploads
+      JWT_PUBLIC_KEY: file:/run/keys/identity-public.pem
+      JAVA_TOOL_OPTIONS: -XX:MaxRAMPercentage=50.0
+    volumes:
+      - video-temp:/app/.local
+      - type: bind
+        source: ${HARNESS_RUN_DIRECTORY}/identity-public.pem
+        target: /run/keys/identity-public.pem
+        read_only: true
+        bind:
+          create_host_path: false
+    ports: ["127.0.0.1:${HARNESS_VIDEO_PORT:-18080}:8080"]
+    depends_on:
+      video-db:
+        condition: service_healthy
+    read_only: true
+    tmpfs: ["/tmp:size=64m,mode=1777"]
+    cpus: 2
+    mem_limit: 1g
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+
+volumes:
+  processing-db:
+  video-db:
+  worker-a:
+  worker-b:
+  video-temp:
