@@ -14,7 +14,7 @@ Na recuperação, verifica primeiro S3. Apenas `404 NoSuchKey` significa ausênc
 
 Cada instância precisa de volume exclusivo, persistente entre reinícios do processo para aproveitar a cópia local. Um lock de arquivo impede abertura simultânea do mesmo diretório. Os arquivos ficam em diretórios por job/token; arquivos desconhecidos e links simbólicos não são apagados arbitrariamente. Perda do volume elimina essa via de recuperação, mas o objeto S3 ainda é consultado primeiro. A sincronização do arquivo não representa teste de durabilidade contra falha física do disco.
 
-`CleanupProcessingArtifacts` é uma operação explícita, ainda sem agendamento. A elegibilidade adquire o lock da linha do job e protege produtores ativos e resultados referenciados. Nunca apaga o resultado remoto vencedor. Após terminal durável, a cópia local pode ser removida. Intenções abandonadas permanecem disponíveis para novas varreduras, permitindo remover PUTs tardios; uma migration adicional registra a última verificação e alterna os lotes. A limpeza não apaga originais no S3.
+`CleanupProcessingArtifacts` é acionado periodicamente por `ArtifactMaintenance` quando a mensageria está habilitada. A elegibilidade adquire o lock da linha do job e protege produtores ativos e resultados referenciados. Nunca apaga o resultado remoto vencedor. Após terminal durável, a cópia local pode ser removida. Intenções abandonadas permanecem disponíveis para novas varreduras, permitindo remover PUTs tardios; uma migration adicional registra a última verificação e alterna os lotes. A limpeza não apaga originais no S3.
 
 ## Configuração e verificação
 

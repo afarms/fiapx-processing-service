@@ -4,6 +4,8 @@ Serviço independente para processamento assíncrono de vídeos. Implementados b
 
 ## Desenvolvimento local
 
+O alvo `make integration-flow` no checkout irmão `fiapx-video-service` exercita os envelopes reais de ambos os serviços com PostgreSQL e FFmpeg. AWS e identidade permanecem simulados. A validação remota tem [plano próprio](docs/aws-validation.md), ainda não executado.
+
 Java 21, Maven Wrapper 3.9.16, Spring Boot 4.1.1, GNU Make e Git Bash no Windows. Use `make verify` para build limpo, testes e JaCoCo (mínimo de 90% de linhas e branches). `make install` também instala o artefato no cache Maven. O teste de arquitetura compila o core somente com o JDK, sem dependências Spring/JPA. Beans próprios são montados em `infrastructure/config/BeanConfig`.
 
 Copie `.env.example` para `.env` e configure senha local exclusiva. O banco de processamento é independente dos bancos de vídeos e identidade. Não compartilhe credenciais entre os serviços.

@@ -6,7 +6,7 @@ O gateway de jobs mantém uma transação curta por operação, com row lock Pos
 
 Um job por videoId. Proprietário, referência imutável do original, tamanho/hash e nome não podem ser substituídos por mensagem conflitante. A inbox é única por eventId e conserva o conteúdo recebido. Um novo eventId para o mesmo trabalho não cria outro job; eventId reutilizado com conteúdo divergente falha e reverte a inserção.
 
-`acquire` retorna ACQUIRED, BUSY ou TERMINAL. Somente uma posse ativa é admitida. Cada aquisição incrementa attempt e produz token UUID novo, distinto do contador mediaAttempts. Heartbeat e mutações exigem o token vigente e lease ainda não vencido. Retentativas por dependência não incrementam mediaAttempts; `beginMedia` registra a intenção de execução antes do subprocesso e permite no máximo três execuções. A política de classificação das falhas e agendamento pelo consumidor ainda será integrada.
+`acquire` retorna ACQUIRED, BUSY ou TERMINAL. Somente uma posse ativa é admitida. Cada aquisição incrementa attempt e produz token UUID novo, distinto do contador mediaAttempts. Heartbeat e mutações exigem o token vigente e lease ainda não vencido. Retentativas por dependência não incrementam mediaAttempts; `beginMedia` registra a intenção de execução antes do subprocesso e permite no máximo três execuções. A política de classificação das falhas e agendamento pelo consumidor está descrita em [mensageria](messaging.md).
 
 ## Tabelas
 
@@ -26,7 +26,7 @@ Não existe TTL automático de 24 horas nesses registros. Esse prazo é de dispo
 
 `completedAt` é o timestamp do banco registrado na transação terminal confirmada; `expiresAt` é fixado junto, +24 horas. Replay e reinício não renovam esse prazo. Job FAILED também é terminal durável, com evento de falha e sem expiresAt.
 
-Estado terminal só retorna recibo TERMINAL se sua outbox terminal existir na versão correspondente. Erro/commit incerto propaga exceção; o consumidor futuro não pode dar ACK nesse caminho. SQS/DeleteMessage ainda não está implementado neste incremento. A conclusão SQL não comprova gravação S3 ou processamento real de mídia.
+Estado terminal só retorna recibo TERMINAL se sua outbox terminal existir na versão correspondente. A reentrega reagenda o resultado já publicado, preservando envelope e prazo. Erro/commit incerto propaga exceção; o consumidor implementado não dá ACK nesse caminho. A conclusão SQL isoladamente não comprova gravação S3 ou processamento real de mídia.
 
 Intenção de resultado permanece após perda de posse. Nova tentativa pode confirmar o mesmo objeto íntegro, sem gastar tentativa de mídia. Se adapter verificar ausência tanto em S3 quanto localmente, `discardMissingResult` libera posse e exige nova aquisição/token antes de reexecutar; isso impede sobrescrever a chave da tentativa antiga.
 
