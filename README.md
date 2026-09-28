@@ -1,6 +1,6 @@
 # FIAP X — Processamento
 
-Serviço independente para processamento assíncrono de vídeos. A base atual fornece aplicação Spring Boot, conexão PostgreSQL/Liquibase, probes de saúde e configuração validada dos limites. Consumo SQS, jobs persistidos, FFmpeg, ZIP, armazenamento S3 e eventos de resultado ainda estão em implementação. Esta imagem ainda não inclui FFmpeg e não consome mensagens.
+Serviço independente para processamento assíncrono de vídeos. Implementados bootstrap, probes, limites configurados e persistência transacional de jobs/tentativas/inbox/outbox, com eventos de início e resultado gravados no banco. Consumo/publicação SQS, FFmpeg, ZIP e armazenamento S3 ainda estão em implementação. Esta imagem ainda não inclui FFmpeg e não consome mensagens. Ver [contrato de persistência](docs/persistence.md).
 
 ## Desenvolvimento local
 
@@ -35,8 +35,8 @@ Sem endpoints públicos de negócio. `GET /actuator/health/liveness` informa vid
 
 Os valores estão configurados e validados na inicialização; a imposição durante processamento será implementada com o pipeline de mídia. Configuração inválida impede inicialização, incluindo heartbeat maior ou igual ao lease ou reserva que não comporte entrada, PNGs, ZIP e margem. A reserva configurada não cria uma quota de disco por si só. O Compose limita a aplicação a 1 GiB de RAM e duas CPUs.
 
-Liquibase possui changelog raiz preparado; ainda não há tabelas de jobs. Hibernate usa `validate`, nunca `update`. PostgreSQL e FFmpeg reais serão usados para validar persistência e processamento conforme essas funcionalidades forem entregues.
+Liquibase gerencia as tabelas de jobs, tentativas, inbox, intenções de resultado e outbox. Hibernate usa `validate`, nunca `update`. `make integration` verifica persistência/concorrência com PostgreSQL real em schemas isolados do banco local informado no `.env`; não acessa AWS. FFmpeg e processamento real ainda serão implementados e validados.
 
 ## Integração planejada
 
-Receber VideoProcessingRequested, persistir job e produzir ProcessingStarted/Completed/Failed. ACK manual somente após efeito durável; resultado e outbox na mesma transação, deduplicação para redelivery. Inativação de conta não cancela trabalho previamente aceito. O serviço de vídeos permanece responsável pelas consultas e autorização de acesso. Não executar contra filas reais até consumidores, permissões e recuperação estarem prontos e verificados.
+O gateway já persiste jobs e envelopes ProcessingStarted/Completed/Failed. Próxima integração: receber VideoProcessingRequested via SQS, executar mídia e publicar a outbox. ACK manual somente após efeito durável; resultado e outbox na mesma transação, deduplicação para redelivery. Inativação de conta não cancela trabalho previamente aceito. O serviço de vídeos permanece responsável pelas consultas e autorização de acesso. Não executar contra filas reais até consumidores, permissões e recuperação estarem prontos e verificados.

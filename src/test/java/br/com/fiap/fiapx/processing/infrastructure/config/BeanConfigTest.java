@@ -6,10 +6,18 @@ import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.boot.env.YamlPropertySourceLoader;
 import org.springframework.core.io.ClassPathResource;
+import br.com.fiap.fiapx.processing.core.gateway.JobGateway;
+import br.com.fiap.fiapx.processing.infrastructure.persistence.repository.SpringProcessingJobRepository;
+import org.springframework.transaction.PlatformTransactionManager;
+import tools.jackson.databind.json.JsonMapper;
+import static org.mockito.Mockito.mock;
 
 class BeanConfigTest {
     private final ApplicationContextRunner runner = new ApplicationContextRunner()
             .withUserConfiguration(BeanConfig.class)
+            .withBean(JsonMapper.class, () -> JsonMapper.builder().build())
+            .withBean(SpringProcessingJobRepository.class, () -> mock(SpringProcessingJobRepository.class))
+            .withBean(PlatformTransactionManager.class, () -> mock(PlatformTransactionManager.class))
             .withInitializer(context -> {
                 try {
                     var sources = new YamlPropertySourceLoader().load("application", new ClassPathResource("application.yml"));
@@ -23,6 +31,7 @@ class BeanConfigTest {
     void startsCompositionWithRealApplicationDefaultsWithoutAwsCredentials() {
         runner.run(context -> {
             assertNull(context.getStartupFailure());
+            assertNotNull(context.getBean(JobGateway.class));
             var limits = context.getBean(ProcessingLimits.class);
             assertEquals(3, limits.maxAttempts());
             assertEquals(100_000_000, limits.maxInputBytes());
