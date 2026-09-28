@@ -1,0 +1,43 @@
+spring:
+  application:
+    name: fiapx-processing-service
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:5434/fiapx_processing}
+    username: ${DB_USERNAME:fiapx_processing}
+    password: ${DB_PASSWORD}
+    hikari:
+      maximum-pool-size: ${DB_POOL_SIZE:5}
+      connection-timeout: 3000
+      validation-timeout: 1000
+  jpa:
+    open-in-view: false
+    hibernate:
+      ddl-auto: validate
+  liquibase:
+    change-log: classpath:db/changelog/db.changelog-master.yaml
+server:
+  port: ${SERVER_PORT:8082}
+  shutdown: graceful
+processing:
+  max-input-bytes: 100000000
+  max-duration-seconds: 300
+  max-extracted-bytes: ${PROCESSING_MAX_EXTRACTED_BYTES:1073741824}
+  max-zip-bytes: ${PROCESSING_MAX_ZIP_BYTES:1073741824}
+  timeout-seconds: ${PROCESSING_TIMEOUT_SECONDS:600}
+  max-attempts: 3
+  disk-reserve-bytes: ${PROCESSING_DISK_RESERVE_BYTES:3221225472}
+  lease-seconds: ${PROCESSING_LEASE_SECONDS:120}
+  heartbeat-seconds: ${PROCESSING_HEARTBEAT_SECONDS:30}
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      show-details: never
+      probes:
+        enabled: true
+      group:
+        readiness:
+          include: readinessState,db
