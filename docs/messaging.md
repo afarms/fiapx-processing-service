@@ -16,7 +16,17 @@ Se o commit terminal ocorreu e a exclusão SQS falhou, a entrega seguinte verifi
 
 O publisher é independente do consumidor. Cada claim SQL curto usa `FOR UPDATE SKIP LOCKED`, token e prazo de 120 segundos. O envio SQS acontece fora da transação. A marca de publicado exige o token ainda vigente; publicador antigo não altera a posse nova. Falha de envio ou commit mantém o payload e `eventId` para reenvio, com espera de 30 segundos. Cada rodada publica no máximo dez eventos; cada envio tem seu próprio claim.
 
-O scheduler tem três threads para consumo, publicação e limpeza; heartbeat tem executor próprio. A limpeza roda a cada 60 segundos, verifica até vinte intenções órfãs por rodada e respeita as proteções de posse/referência do armazenamento. Não expira resultados válidos. Reconciliação de trabalhos/resultados ausentes das filas ainda não está implementada.
+O scheduler tem três threads para consumo, publicação e limpeza; heartbeat tem executor próprio. A limpeza roda a cada 60 segundos, verifica até vinte intenções órfãs por rodada e respeita as proteções de posse/referência do armazenamento. Não expira resultados válidos.
+
+## Recuperação de resultados ausentes
+
+O serviço de vídeos pode republicar o pedido original quando um vídeo aceito permanece sem resultado. Ao receber um trabalho terminal consistente, o worker verifica sua outbox e, na mesma transação da verificação da inbox, reagenda o evento terminal caso ele já estivesse publicado. Somente depois do commit o consumidor pode confirmar o trabalho. Não recria o evento, não publica outro ProcessingStarted, não executa FFmpeg e não renova `completedAt` ou `expiresAt`.
+
+O reagendamento conserva exatamente o payload, `eventId`, versão e referência do resultado. Se a publicação já está pendente, seu claim e backoff permanecem intactos. Falha SQL ou commit incerto impede ACK; a reentrega tenta novamente. Publicação posterior usa os mesmos mecanismos de lease/retry da outbox. Job, inbox, resultado e outbox não são apagados automaticamente após 24 horas.
+
+DLQ exige diagnóstico antes de redrive operacional autorizado, preservando a identidade original. `maxReceiveCount=5` é política de transporte, distinta das três tentativas de mídia; mensagem inválida não vira FAILED artificial. Investigar DLQ não vazia, erros recorrentes e republicações sem progresso. Aplicações não recebem permissão para consumir DLQs. Alarmes cloud e redrive/expiração reais ainda dependem de provisionamento e ensaio autorizado.
+
+`make integration` exercita perda simulada do transporte após publicação, reinício, reentregas simultâneas de COMPLETED/FAILED, preservação do envelope/prazos e falha de reagendamento sem ACK usando PostgreSQL real. SQS, S3 e mídia são simulados nesses cenários; não há alegação de redrive AWS real.
 
 ## Configuração
 

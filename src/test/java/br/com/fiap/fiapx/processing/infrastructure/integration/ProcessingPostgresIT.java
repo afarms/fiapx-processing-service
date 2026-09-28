@@ -186,6 +186,58 @@ class ProcessingPostgresIT {
         }
     }
 
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(booleans={true,false})
+    void terminalReplayRecoversLostResultAfterRestartWithoutMediaOrNewEnvelope(boolean success) throws Exception {
+        var request=request(); var claim=success ? prepare(request) : gateway.acquire(request);
+        if(!success) gateway.beginMedia(request.videoId(),claim.job().token());
+        var terminal=success ? gateway.complete(request.videoId(),claim.job().token())
+                : gateway.fail(request.videoId(),claim.job().token(),FailureCode.INVALID_MEDIA);
+        var outbox=context.getBean(ProcessingOutbox.class);
+        var first=outbox.claim().orElseThrow(); outbox.published(first);
+        var second=outbox.claim().orElseThrow(); outbox.published(second);
+        var original=jdbc.queryForMap("SELECT event_id,payload,occurred_at FROM processing_outbox WHERE event_version=?",terminal.version());
+        assertTrue(outbox.claim().isEmpty()); // No pending transport obligation remains; simulate result retention loss.
+        context.close(); startApplication(); outbox=context.getBean(ProcessingOutbox.class);
+        try(var pool=Executors.newFixedThreadPool(2)) {
+            var start=new CountDownLatch(1);
+            Callable<JobGateway.Claim> replay=()->{start.await(); return gateway.acquire(request);};
+            var a=pool.submit(replay); var b=pool.submit(replay); start.countDown();
+            assertEquals(JobGateway.Disposition.TERMINAL,a.get(10,TimeUnit.SECONDS).disposition());
+            assertEquals(JobGateway.Disposition.TERMINAL,b.get(10,TimeUnit.SECONDS).disposition());
+        }
+        var resend=outbox.claim().orElseThrow();
+        assertEquals(original.get("event_id"),resend.id()); assertEquals(original.get("payload"),resend.body());
+        assertTrue(outbox.claim().isEmpty()); // Started remains published.
+        var replay=gateway.acquire(request); // Does not steal or invalidate the publisher's active claim.
+        assertEquals(terminal.completedAt(),replay.job().completedAt()); assertEquals(terminal.expiresAt(),replay.job().expiresAt());
+        assertEquals(terminal.version(),replay.job().version()); assertEquals(1,replay.job().mediaAttempts());
+        outbox.retry(resend);
+        var available=jdbc.queryForObject("SELECT available_at FROM processing_outbox WHERE event_id=?",java.sql.Timestamp.class,resend.id());
+        gateway.acquire(request);
+        assertEquals(available,jdbc.queryForObject("SELECT available_at FROM processing_outbox WHERE event_id=?",java.sql.Timestamp.class,resend.id()));
+        jdbc.update("UPDATE processing_outbox SET available_at=clock_timestamp() WHERE event_id=?",resend.id());
+        var retried=outbox.claim().orElseThrow(); assertEquals(resend.body(),retried.body()); outbox.published(retried);
+        assertEquals(2,count("processing_outbox")); assertEquals(1,count("processing_attempts"));
+    }
+
+    @Test void rescheduleRollbackPreventsAckAndRetryPreservesTerminal() throws Exception {
+        var request=request(); var claim=gateway.acquire(request);
+        var terminal=gateway.fail(request.videoId(),claim.job().token(),FailureCode.INVALID_MEDIA);
+        jdbc.update("UPDATE processing_outbox SET published_at=clock_timestamp()");
+        jdbc.execute("ALTER TABLE processing_outbox ADD CONSTRAINT reject_replay_test CHECK(published_at IS NOT NULL)");
+        var sqs=mock(SqsClient.class); var media=mock(MediaGateway.class); var storage=mock(StoreProcessingResult.class);
+        try(var scheduler=Executors.newSingleThreadScheduledExecutor(); var consumer=consumer(request,sqs,media,storage,scheduler)) {
+            consumer.poll(); verify(sqs,never()).deleteMessage(any(DeleteMessageRequest.class));
+            assertEquals(2,jdbc.queryForObject("SELECT count(*) FROM processing_outbox WHERE published_at IS NOT NULL",Integer.class));
+            jdbc.execute("ALTER TABLE processing_outbox DROP CONSTRAINT reject_replay_test");
+            consumer.poll(); verify(sqs).deleteMessage(any(DeleteMessageRequest.class));
+            verifyNoInteractions(media,storage);
+            assertEquals(terminal.version(),gateway.acquire(request).job().version());
+            assertEquals(1,jdbc.queryForObject("SELECT count(*) FROM processing_outbox WHERE published_at IS NULL",Integer.class));
+        } finally { jdbc.execute("ALTER TABLE processing_outbox DROP CONSTRAINT IF EXISTS reject_replay_test"); }
+    }
+
     @Test void cleanupProtectsPendingAndWinningArtifactsAcrossLeaseTakeover() {
         var cleanup=context.getBean(ArtifactCleanupGateway.class);
         var request=request(); var first=prepare(request); UUID producer=first.job().token();

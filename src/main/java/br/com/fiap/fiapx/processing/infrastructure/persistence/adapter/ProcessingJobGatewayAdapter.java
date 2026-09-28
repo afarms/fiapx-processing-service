@@ -39,6 +39,7 @@ public final class ProcessingJobGatewayAdapter implements JobGateway {
                 if (repository.terminalEvents(request.videoId(), job.snapshot().version()) != 1)
                     throw new IllegalStateException("Terminal outbox missing");
                 repository.finishInbox(request.videoId(), now);
+                repository.rescheduleTerminal(request.videoId(), job.snapshot().version());
                 return new Claim(Disposition.TERMINAL, job.snapshot());
             }
             if (!job.acquire(UUID.randomUUID(), now, limits.leaseSeconds())) return new Claim(Disposition.BUSY, job.snapshot());
