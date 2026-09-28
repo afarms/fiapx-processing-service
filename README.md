@@ -1,6 +1,6 @@
 # FIAP X — Processamento
 
-Serviço independente para processamento assíncrono de vídeos. Implementados bootstrap, probes, persistência transacional de jobs/tentativas/inbox/outbox, pipeline FFprobe/FFmpeg para PNGs em ZIP e adapters de armazenamento com verificação de integridade e recuperação de resultados. A imagem inclui FFmpeg 8.1.2; consumo/publicação SQS ainda está em implementação. Ver [contrato de persistência](docs/persistence.md), [pipeline de mídia](docs/media.md) e [armazenamento](docs/storage.md).
+Serviço independente para processamento assíncrono de vídeos. Implementados bootstrap, probes, persistência transacional de jobs/tentativas/inbox/outbox, pipeline FFprobe/FFmpeg para PNGs em ZIP e adapters de armazenamento com verificação de integridade e recuperação de resultados. A imagem inclui FFmpeg 8.1.2; consumo SQS com ACK manual e publicação da outbox estão implementados, desativados por padrão. Ver [contrato de persistência](docs/persistence.md), [pipeline de mídia](docs/media.md) e [armazenamento](docs/storage.md) e [mensageria](docs/messaging.md).
 
 ## Desenvolvimento local
 
@@ -33,10 +33,10 @@ Sem endpoints públicos de negócio. `GET /actuator/health/liveness` informa vid
 | Reserva de disco por execução | 3 GiB |
 | Lease / heartbeat | 120 / 30 segundos |
 
-O pipeline local impõe tamanho de entrada, duração decodificada, bytes agregados de PNG e ZIP e prazo compartilhado entre FFprobe/FFmpeg. Configuração inválida impede inicialização, incluindo mais de três tentativas, heartbeat maior ou igual ao lease ou reserva que não comporte entrada, PNGs, ZIP e margem. Uma execução por instância verifica espaço livre antes de iniciar; a reserva configurada não cria uma quota de filesystem. O Compose limita a aplicação a 1 GiB de RAM e duas CPUs. O consumidor futuro será responsável por admissão antes de receber trabalho e renovar a posse.
+O pipeline local impõe tamanho de entrada, duração decodificada, bytes agregados de PNG e ZIP e prazo compartilhado entre FFprobe/FFmpeg. Configuração inválida impede inicialização, incluindo mais de três tentativas, heartbeat maior ou igual ao lease ou reserva que não comporte entrada, PNGs, ZIP e margem. Uma execução por instância verifica espaço livre antes de iniciar; a reserva configurada não cria uma quota de filesystem. O Compose limita a aplicação a 1 GiB de RAM e duas CPUs. O consumidor verifica capacidade antes de receber trabalho e renova posse SQL e visibilidade SQS por heartbeat.
 
 Liquibase gerencia as tabelas de jobs, tentativas, inbox, intenções de resultado e outbox. Hibernate usa `validate`, nunca `update`. `make integration` verifica persistência/concorrência com PostgreSQL real em schemas isolados do banco local informado no `.env`. `make integration-media` executa testes com FFmpeg real em container limitado a 1 GiB e duas CPUs, sem depender do FFmpeg do host. Ambos são locais e não acessam AWS.
 
-## Integração planejada
+## Integração assíncrona
 
-O gateway já persiste jobs e envelopes ProcessingStarted/Completed/Failed. Próxima integração: receber VideoProcessingRequested via SQS, executar mídia e publicar a outbox. ACK manual somente após efeito durável; resultado e outbox na mesma transação, deduplicação para redelivery. Inativação de conta não cancela trabalho previamente aceito. O serviço de vídeos permanece responsável pelas consultas e autorização de acesso. Não executar contra filas reais até consumidores, permissões e recuperação estarem prontos e verificados.
+O gateway já persiste jobs e envelopes ProcessingStarted/Completed/Failed. O consumidor recebe VideoProcessingRequested via SQS, orquestra mídia/armazenamento e publica resultados por outbox independente. ACK manual somente após efeito durável; resultado e outbox na mesma transação, deduplicação para redelivery. Inativação de conta não cancela trabalho previamente aceito. O serviço de vídeos permanece responsável pelas consultas e autorização de acesso. Não executar contra filas reais até consumidores, permissões e recuperação estarem prontos e verificados.

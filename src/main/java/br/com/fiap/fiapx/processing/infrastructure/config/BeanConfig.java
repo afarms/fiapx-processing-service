@@ -25,9 +25,62 @@ import software.amazon.awssdk.auth.credentials.*;
 import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.s3.S3Client;
 import software.amazon.awssdk.http.urlconnection.UrlConnectionHttpClient;
+import br.com.fiap.fiapx.processing.infrastructure.messaging.*;
+import br.com.fiap.fiapx.processing.infrastructure.persistence.adapter.ProcessingOutbox;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.scheduling.annotation.EnableScheduling;
+import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
+import software.amazon.awssdk.services.sqs.SqsClient;
+import java.util.concurrent.*;
 
 @Configuration(proxyBeanMethods = false)
+@EnableScheduling
 public class BeanConfig {
+    @Bean
+    @ConditionalOnProperty(name="messaging.enabled",havingValue="true")
+    ArtifactMaintenance artifactMaintenance(CleanupProcessingArtifacts cleanup) { return new ArtifactMaintenance(cleanup); }
+
+    @Bean
+    ProcessingOutbox processingOutbox(JdbcTemplate jdbc, PlatformTransactionManager manager) {
+        var tx=new TransactionTemplate(manager);
+        tx.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW); tx.setTimeout(10);
+        return new ProcessingOutbox(jdbc,tx);
+    }
+
+    @Bean
+    @ConditionalOnProperty(name="messaging.enabled",havingValue="true")
+    SqsClient processingSqs(AwsCredentialsProvider credentials,@Value("${storage.region}") String region) {
+        return SqsClient.builder().region(Region.of(region)).credentialsProvider(credentials)
+                .httpClientBuilder(UrlConnectionHttpClient.builder().connectionTimeout(Duration.ofSeconds(5)).socketTimeout(Duration.ofSeconds(25)))
+                .overrideConfiguration(c->c.apiCallTimeout(Duration.ofSeconds(40)).apiCallAttemptTimeout(Duration.ofSeconds(30))).build();
+    }
+
+    @Bean(destroyMethod="shutdownNow")
+    @ConditionalOnProperty(name="messaging.enabled",havingValue="true")
+    ScheduledExecutorService leaseScheduler() { return Executors.newSingleThreadScheduledExecutor(); }
+
+    @Bean
+    @ConditionalOnProperty(name="messaging.enabled",havingValue="true")
+    ThreadPoolTaskScheduler taskScheduler() {
+        var scheduler=new ThreadPoolTaskScheduler(); scheduler.setPoolSize(3); scheduler.setThreadNamePrefix("processing-");
+        return scheduler;
+    }
+
+    @Bean
+    @ConditionalOnProperty(name="messaging.enabled",havingValue="true")
+    WorkConsumer workConsumer(SqsClient sqs,JobGateway jobs,MediaGateway media,StoreProcessingResult storage,
+            ProcessingLimits limits,JsonMapper json,ScheduledExecutorService leaseScheduler,LocalProcessingArtifacts files,
+            @Value("${messaging.work-queue-url}") String queue,@Value("${storage.bucket}") String bucket) {
+        return new WorkConsumer(sqs,queue,new WorkMessageDecoder(json,bucket),new ProcessWork(jobs,media,storage,limits),
+                jobs,limits,leaseScheduler,files::hasCapacity);
+    }
+
+    @Bean
+    @ConditionalOnProperty(name="messaging.enabled",havingValue="true")
+    ResultPublisher resultPublisher(ProcessingOutbox outbox,SqsClient sqs,@Value("${messaging.result-queue-url}") String queue) {
+        return new ResultPublisher(outbox,sqs,queue);
+    }
+
     @Bean
     ArtifactCleanupGateway artifactCleanupGateway(SpringProcessingJobRepository repository,
             ProcessingJobMapper mapper, PlatformTransactionManager manager) {

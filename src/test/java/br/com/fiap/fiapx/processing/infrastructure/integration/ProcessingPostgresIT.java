@@ -8,6 +8,11 @@ import br.com.fiap.fiapx.processing.core.gateway.ArtifactCleanupGateway;
 import br.com.fiap.fiapx.processing.core.gateway.ObjectStorageGateway;
 import br.com.fiap.fiapx.processing.core.gateway.MediaGateway;
 import br.com.fiap.fiapx.processing.core.usecase.StoreProcessingResult;
+import br.com.fiap.fiapx.processing.core.usecase.ProcessWork;
+import br.com.fiap.fiapx.processing.infrastructure.messaging.*;
+import br.com.fiap.fiapx.processing.infrastructure.persistence.adapter.ProcessingOutbox;
+import software.amazon.awssdk.services.sqs.SqsClient;
+import software.amazon.awssdk.services.sqs.model.*;
 import br.com.fiap.fiapx.processing.infrastructure.storage.LocalProcessingArtifacts;
 import br.com.fiap.fiapx.processing.infrastructure.storage.StorageFixtures;
 import java.nio.file.*;
@@ -53,6 +58,7 @@ class ProcessingPostgresIT {
 
     void startApplication() {
         context=new SpringApplicationBuilder(ProcessingApplication.class).web(WebApplicationType.NONE).run(
+                "--messaging.enabled=false", "--storage.enabled=false",
                 "--spring.datasource.url="+System.getenv("PROCESSING_TEST_DB_URL"),
                 "--spring.datasource.username="+System.getenv("PROCESSING_TEST_DB_USERNAME"),
                 "--spring.datasource.password="+System.getenv("PROCESSING_TEST_DB_PASSWORD"),
@@ -89,6 +95,95 @@ class ProcessingPostgresIT {
         assertEquals(claim.job().token(),replay.job().token());
         assertEquals(checksum,jdbc.queryForObject("SELECT md5sum FROM databasechangelog WHERE id='001-processing-jobs'",String.class));
         assertEquals(1,count("processing_jobs")); assertEquals(1,count("processing_outbox"));
+    }
+
+    WorkConsumer consumer(ProcessingRequest request,SqsClient sqs,MediaGateway media,StoreProcessingResult storage,ScheduledExecutorService scheduler) {
+        when(sqs.receiveMessage(any(ReceiveMessageRequest.class))).thenReturn(ReceiveMessageResponse.builder().messages(
+                Message.builder().messageId("local-delivery").receiptHandle("receipt-current")
+                        .body(WorkMessageDecoderTest.envelope(request)).build()).build());
+        return new WorkConsumer(sqs,"https://sqs.us-east-1.amazonaws.com/123456789012/work",
+                new WorkMessageDecoder(context.getBean(JsonMapper.class),request.bucket()),
+                new ProcessWork(gateway,media,storage,limits()),gateway,limits(),scheduler,()->true);
+    }
+
+    @Test void failedCommitAckFailureAndTerminalReplayUseRealDurableState() throws Exception {
+        var request=request(); var sqs=mock(SqsClient.class); var media=mock(MediaGateway.class);
+        var storage=mock(StoreProcessingResult.class);
+        when(storage.download(any(),any())).thenReturn(temporary.resolve("verified"));
+        when(media.extract(any(),any())).thenThrow(new MediaFailure(FailureCode.INVALID_MEDIA));
+        // Force failure inside the same transaction that would insert the terminal outbox.
+        jdbc.execute("ALTER TABLE processing_outbox ADD CONSTRAINT reject_failed_test CHECK(event_type <> 'ProcessingFailed')");
+        try (var scheduler=Executors.newSingleThreadScheduledExecutor(); var consumer=consumer(request,sqs,media,storage,scheduler)) {
+            consumer.poll(); verify(sqs,never()).deleteMessage(any(DeleteMessageRequest.class));
+            assertEquals("RETRY_WAIT",jdbc.queryForObject("SELECT status FROM processing_jobs WHERE id=?",String.class,request.videoId()));
+            assertEquals(0,jdbc.queryForObject("SELECT count(*) FROM processing_outbox WHERE event_type='ProcessingFailed'",Integer.class));
+            jdbc.execute("ALTER TABLE processing_outbox DROP CONSTRAINT reject_failed_test");
+            jdbc.update("UPDATE processing_jobs SET retry_at=clock_timestamp()-interval '1 second' WHERE id=?",request.videoId());
+            when(sqs.deleteMessage(any(DeleteMessageRequest.class))).thenAnswer(call->{
+                assertEquals("FAILED",jdbc.queryForObject("SELECT status FROM processing_jobs WHERE id=?",String.class,request.videoId()));
+                assertEquals(1,jdbc.queryForObject("SELECT count(*) FROM processing_outbox WHERE event_type='ProcessingFailed'",Integer.class));
+                throw new IllegalStateException("crash after commit / uncertain ACK");
+            });
+            consumer.poll(); consumer.poll();
+            verify(media,times(2)).extract(any(),any()); // rolled back terminal + successful terminal, never replay
+            verify(sqs,times(2)).deleteMessage(any(DeleteMessageRequest.class));
+            assertEquals(1,count("processing_inbox"));
+        } finally { jdbc.execute("ALTER TABLE processing_outbox DROP CONSTRAINT IF EXISTS reject_failed_test"); }
+    }
+
+    @Test void activeDuplicateAndDependencyOutageDoNotAckOrSpendMediaAttempt() throws Exception {
+        var request=request(); var sqs=mock(SqsClient.class); var media=mock(MediaGateway.class); var storage=mock(StoreProcessingResult.class);
+        gateway.acquire(request);
+        try (var scheduler=Executors.newSingleThreadScheduledExecutor(); var consumer=consumer(request,sqs,media,storage,scheduler)) {
+            consumer.poll(); verifyNoInteractions(media,storage); verify(sqs,never()).deleteMessage(any(DeleteMessageRequest.class));
+            expire(request.videoId()); when(storage.download(any(),any())).thenThrow(new IOException("S3 unavailable"));
+            consumer.poll(); verify(sqs,never()).deleteMessage(any(DeleteMessageRequest.class));
+            assertEquals(0,jdbc.queryForObject("SELECT media_attempts FROM processing_jobs WHERE id=?",Integer.class,request.videoId()));
+        }
+    }
+
+    @Test void thirdMediaAttemptPendingStorageCompletesAndAcksWithoutMoreMedia() throws Exception {
+        var request=StorageFixtures.request(); JobGateway.Claim claim=null;
+        for (int i=0;i<3;i++) {
+            claim=gateway.acquire(request); gateway.beginMedia(request.videoId(),claim.job().token());
+            if (i<2) expire(request.videoId());
+        }
+        var artifact=StorageFixtures.artifact(claim.job());
+        gateway.prepareResult(request.videoId(),claim.job().token(),artifact); expire(request.videoId());
+        var objects=mock(ObjectStorageGateway.class); when(objects.present(eq(artifact),any())).thenReturn(true);
+        var sqs=mock(SqsClient.class); var media=mock(MediaGateway.class);
+        try (var files=new LocalProcessingArtifacts(temporary.resolve("third-attempt"),1);
+             var scheduler=Executors.newSingleThreadScheduledExecutor();
+             var consumer=consumer(request,sqs,media,new StoreProcessingResult(gateway,objects,files),scheduler)) {
+            when(sqs.deleteMessage(any(DeleteMessageRequest.class))).thenAnswer(call->{
+                assertEquals("COMPLETED",jdbc.queryForObject("SELECT status FROM processing_jobs WHERE id=?",String.class,request.videoId()));
+                assertEquals(1,jdbc.queryForObject("SELECT count(*) FROM processing_outbox WHERE event_type='ProcessingCompleted'",Integer.class));
+                return DeleteMessageResponse.builder().build();
+            });
+            consumer.poll(); consumer.poll(); verify(sqs,times(2)).deleteMessage(any(DeleteMessageRequest.class));
+            verifyNoInteractions(media); verify(objects,times(1)).present(eq(artifact),any());
+            assertEquals(3,jdbc.queryForObject("SELECT media_attempts FROM processing_jobs WHERE id=?",Integer.class,request.videoId()));
+        }
+    }
+
+    @Test void outboxClaimsFenceLatePublisherAndPreserveExactPayloadAcrossRetry() throws Exception {
+        var r=request(); var claim=gateway.acquire(r); gateway.fail(r.videoId(),claim.job().token(),FailureCode.INVALID_MEDIA);
+        var outbox=context.getBean(ProcessingOutbox.class);
+        try (var pool=Executors.newFixedThreadPool(2)) {
+            var first=pool.submit(outbox::claim); var second=pool.submit(outbox::claim);
+            var a=first.get(10,TimeUnit.SECONDS).orElseThrow(); var b=second.get(10,TimeUnit.SECONDS).orElseThrow();
+            assertNotEquals(a.id(),b.id()); assertTrue(outbox.claim().isEmpty());
+            jdbc.update("UPDATE processing_outbox SET claim_until=clock_timestamp()-interval '1 second' WHERE event_id=?",a.id());
+            var takeover=outbox.claim().orElseThrow(); assertEquals(a.id(),takeover.id());
+            assertEquals(a.body(),takeover.body()); assertNotEquals(a.token(),takeover.token());
+            outbox.published(a); outbox.retry(a);
+            assertEquals(takeover.token(),jdbc.queryForObject("SELECT claim_token FROM processing_outbox WHERE event_id=?",UUID.class,a.id()));
+            outbox.retry(takeover); assertTrue(outbox.claim().isEmpty());
+            jdbc.update("UPDATE processing_outbox SET available_at=clock_timestamp()-interval '1 second' WHERE event_id=?",a.id());
+            var retry=outbox.claim().orElseThrow(); assertEquals(a.body(),retry.body()); outbox.published(retry); outbox.published(b);
+            assertEquals(2,jdbc.queryForObject("SELECT count(*) FROM processing_outbox WHERE published_at IS NOT NULL",Integer.class));
+            assertTrue(outbox.claim().isEmpty());
+        }
     }
 
     @Test void cleanupProtectsPendingAndWinningArtifactsAcrossLeaseTakeover() {

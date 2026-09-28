@@ -37,6 +37,10 @@ storage:
   region: ${AWS_REGION:us-east-1}
   aws-profile: ${PROCESSING_AWS_PROFILE:}
   local-directory: ${PROCESSING_ARTIFACT_DIRECTORY:/app/.local/artifacts}
+messaging:
+  enabled: ${PROCESSING_MESSAGING_ENABLED:false}
+  work-queue-url: ${PROCESSING_WORK_QUEUE_URL:}
+  result-queue-url: ${PROCESSING_RESULT_QUEUE_URL:}
 management:
   endpoints:
     web:
