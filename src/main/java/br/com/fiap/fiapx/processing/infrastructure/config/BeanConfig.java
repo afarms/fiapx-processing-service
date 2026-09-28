@@ -15,9 +15,65 @@ import tools.jackson.databind.json.JsonMapper;
 import br.com.fiap.fiapx.processing.core.gateway.MediaGateway;
 import br.com.fiap.fiapx.processing.infrastructure.media.*;
 import java.nio.file.Path;
+import java.time.Duration;
+import br.com.fiap.fiapx.processing.core.gateway.*;
+import br.com.fiap.fiapx.processing.core.usecase.*;
+import br.com.fiap.fiapx.processing.infrastructure.storage.*;
+import br.com.fiap.fiapx.processing.infrastructure.persistence.adapter.ArtifactCleanupAdapter;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import software.amazon.awssdk.auth.credentials.*;
+import software.amazon.awssdk.regions.Region;
+import software.amazon.awssdk.services.s3.S3Client;
+import software.amazon.awssdk.http.urlconnection.UrlConnectionHttpClient;
 
 @Configuration(proxyBeanMethods = false)
 public class BeanConfig {
+    @Bean
+    ArtifactCleanupGateway artifactCleanupGateway(SpringProcessingJobRepository repository,
+            ProcessingJobMapper mapper, PlatformTransactionManager manager) {
+        var tx = new TransactionTemplate(manager);
+        tx.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW); tx.setTimeout(10);
+        return new ArtifactCleanupAdapter(repository, mapper, tx);
+    }
+
+    @Bean
+    @ConditionalOnProperty(name = "storage.enabled", havingValue = "true")
+    AwsCredentialsProvider storageCredentials(@Value("${storage.aws-profile:}") String profile) {
+        return profile.isBlank() ? DefaultCredentialsProvider.builder().build() : ProfileCredentialsProvider.create(profile);
+    }
+
+    @Bean
+    @ConditionalOnProperty(name = "storage.enabled", havingValue = "true")
+    S3Client storageS3(AwsCredentialsProvider credentials, @Value("${storage.region}") String region) {
+        return S3Client.builder().region(Region.of(region)).credentialsProvider(credentials)
+                .httpClientBuilder(UrlConnectionHttpClient.builder().connectionTimeout(Duration.ofSeconds(5)).socketTimeout(Duration.ofSeconds(10)))
+                .overrideConfiguration(c -> c.apiCallTimeout(Duration.ofSeconds(120)).apiCallAttemptTimeout(Duration.ofSeconds(60))).build();
+    }
+
+    @Bean
+    @ConditionalOnProperty(name = "storage.enabled", havingValue = "true")
+    LocalProcessingArtifacts localArtifacts(@Value("${storage.local-directory}") Path root, ProcessingLimits limits) throws java.io.IOException {
+        return new LocalProcessingArtifacts(root, limits.diskReserveBytes());
+    }
+
+    @Bean
+    @ConditionalOnProperty(name = "storage.enabled", havingValue = "true")
+    ObjectStorageGateway objectStorage(S3Client client, @Value("${storage.bucket}") String bucket, ProcessingLimits limits) {
+        return new S3ProcessingStorage(client, bucket, limits.maxZipBytes());
+    }
+
+    @Bean
+    @ConditionalOnProperty(name = "storage.enabled", havingValue = "true")
+    StoreProcessingResult storeProcessingResult(JobGateway jobs, ObjectStorageGateway objects, LocalProcessingArtifacts files) {
+        return new StoreProcessingResult(jobs, objects, files);
+    }
+
+    @Bean
+    @ConditionalOnProperty(name = "storage.enabled", havingValue = "true")
+    CleanupProcessingArtifacts cleanupProcessingArtifacts(ArtifactCleanupGateway eligibility, ObjectStorageGateway objects, LocalProcessingArtifacts files) {
+        return new CleanupProcessingArtifacts(eligibility, objects, files);
+    }
+
     @Bean
     MediaGateway mediaGateway(ProcessingLimits limits,
             @Value("${processing.temp-directory}") String directory,

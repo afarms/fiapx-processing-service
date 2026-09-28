@@ -4,9 +4,25 @@ import br.com.fiap.fiapx.processing.infrastructure.persistence.entity.Processing
 import java.time.Instant;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.List;
 import org.springframework.data.jpa.repository.*;
 
 public interface SpringProcessingJobRepository extends JpaRepository<ProcessingJobEntity, UUID> {
+    @Query(value = """
+        SELECT i.result_json FROM processing_result_intents i JOIN processing_jobs j ON j.id=i.job_id
+        WHERE j.result_json IS NULL OR
+            CAST(j.result_json AS jsonb)->>'objectKey' <> CAST(i.result_json AS jsonb)->>'objectKey'
+        ORDER BY i.cleanup_checked_at NULLS FIRST, i.created_at, i.attempt_id LIMIT :limit
+        """, nativeQuery = true)
+    List<String> abandonedResults(int limit);
+
+    @Query(value = "SELECT count(*) FROM processing_attempts WHERE job_id=:job AND attempt_id=:producer", nativeQuery = true)
+    int attemptBelongs(UUID job, UUID producer);
+
+    @Modifying
+    @Query(value = "UPDATE processing_result_intents SET cleanup_checked_at=clock_timestamp() WHERE attempt_id=:producer", nativeQuery = true)
+    int checkedResult(UUID producer);
+
     @Modifying
     @Query(value = "INSERT INTO processing_jobs(id,owner_id,request_json) VALUES (:id,:owner,:request) ON CONFLICT (id) DO NOTHING", nativeQuery = true)
     int insertNew(UUID id, UUID owner, String request);

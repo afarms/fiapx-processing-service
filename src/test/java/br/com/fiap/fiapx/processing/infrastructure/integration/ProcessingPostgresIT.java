@@ -4,6 +4,16 @@ import static br.com.fiap.fiapx.processing.Fixtures.*;
 import static org.junit.jupiter.api.Assertions.*;
 import br.com.fiap.fiapx.processing.core.domain.*;
 import br.com.fiap.fiapx.processing.core.gateway.JobGateway;
+import br.com.fiap.fiapx.processing.core.gateway.ArtifactCleanupGateway;
+import br.com.fiap.fiapx.processing.core.gateway.ObjectStorageGateway;
+import br.com.fiap.fiapx.processing.core.gateway.MediaGateway;
+import br.com.fiap.fiapx.processing.core.usecase.StoreProcessingResult;
+import br.com.fiap.fiapx.processing.infrastructure.storage.LocalProcessingArtifacts;
+import br.com.fiap.fiapx.processing.infrastructure.storage.StorageFixtures;
+import java.nio.file.*;
+import java.io.IOException;
+import static org.mockito.Mockito.*;
+import static org.mockito.ArgumentMatchers.*;
 import br.com.fiap.fiapx.processing.infrastructure.ProcessingApplication;
 import java.sql.DriverManager;
 import java.time.Instant;
@@ -21,6 +31,7 @@ import tools.jackson.databind.json.JsonMapper;
 /** Real PostgreSQL; no broker, storage or media engine is invoked. */
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class ProcessingPostgresIT {
+    @org.junit.jupiter.api.io.TempDir Path temporary;
     final String schema="it_processing_"+UUID.randomUUID().toString().replace("-","");
     ConfigurableApplicationContext context;
     JdbcTemplate jdbc;
@@ -70,14 +81,84 @@ class ProcessingPostgresIT {
 
     @Test void freshMigrationAndRestartPreserveJobAndOutbox() {
         var request=request(); var claim=gateway.acquire(request);
-        assertEquals(1,count("databasechangelog"));
-        String checksum=jdbc.queryForObject("SELECT md5sum FROM databasechangelog",String.class);
+        assertEquals(2,count("databasechangelog"));
+        String checksum=jdbc.queryForObject("SELECT md5sum FROM databasechangelog WHERE id='001-processing-jobs'",String.class);
         context.close(); startApplication();
         var replay=gateway.acquire(request);
         assertEquals(JobGateway.Disposition.BUSY,replay.disposition());
         assertEquals(claim.job().token(),replay.job().token());
-        assertEquals(checksum,jdbc.queryForObject("SELECT md5sum FROM databasechangelog",String.class));
+        assertEquals(checksum,jdbc.queryForObject("SELECT md5sum FROM databasechangelog WHERE id='001-processing-jobs'",String.class));
         assertEquals(1,count("processing_jobs")); assertEquals(1,count("processing_outbox"));
+    }
+
+    @Test void cleanupProtectsPendingAndWinningArtifactsAcrossLeaseTakeover() {
+        var cleanup=context.getBean(ArtifactCleanupGateway.class);
+        var request=request(); var first=prepare(request); UUID producer=first.job().token();
+        assertFalse(cleanup.remoteAllowed(request.videoId(),producer)); assertFalse(cleanup.localAllowed(request.videoId(),producer));
+        expire(request.videoId());
+        assertFalse(cleanup.remoteAllowed(request.videoId(),producer)); assertFalse(cleanup.localAllowed(request.videoId(),producer));
+        var next=gateway.acquire(request); gateway.complete(request.videoId(),next.job().token());
+        assertFalse(cleanup.remoteAllowed(request.videoId(),producer)); assertTrue(cleanup.localAllowed(request.videoId(),producer));
+        assertFalse(cleanup.remoteAllowed(request.videoId(),UUID.randomUUID())); assertTrue(cleanup.abandoned(10).isEmpty());
+    }
+
+    @Test void cleanupRotatesAbandonedIntentsAndKeepsThemForLateWrites() {
+        var cleanup=context.getBean(ArtifactCleanupGateway.class);
+        var a=request(); var first=prepare(a); gateway.discardMissingResult(a.videoId(),first.job().token());
+        var b=request(); var second=prepare(b); gateway.discardMissingResult(b.videoId(),second.job().token());
+        var candidates=cleanup.abandoned(1); assertEquals(1,candidates.size());
+        UUID token=ResultKey.parse(candidates.getFirst().objectKey()).producer(); cleanup.checked(token);
+        assertNotEquals(token,ResultKey.parse(cleanup.abandoned(1).getFirst().objectKey()).producer());
+        assertEquals(2,cleanup.abandoned(10).size());
+        assertTrue(cleanup.remoteAllowed(a.videoId(),first.job().token()));
+        // Repeating cleanup remains safe when an expired PUT lands after a previous delete.
+        cleanup.checked(first.job().token()); assertTrue(cleanup.remoteAllowed(a.videoId(),first.job().token()));
+        var live=gateway.acquire(a); assertFalse(cleanup.localAllowed(a.videoId(),live.job().token()));
+    }
+
+    @Test void cleanupWaitsForAnIntentAlreadyCommittingInsteadOfUsingStaleState() throws Exception {
+        var cleanup=context.getBean(ArtifactCleanupGateway.class); var request=request(); var claim=gateway.acquire(request);
+        var id=request.videoId(); var producer=claim.job().token(); gateway.beginMedia(id,producer); expire(id);
+        try(var connection=connection(); var pool=Executors.newSingleThreadExecutor()) {
+            connection.setAutoCommit(false);
+            try(var update=connection.prepareStatement("UPDATE "+schema+".processing_jobs SET result_json=?,status='RESULT_PENDING_STORAGE' WHERE id=?")) {
+                update.setString(1,JsonMapper.builder().build().writeValueAsString(artifact(claim.job()))); update.setObject(2,id); update.executeUpdate();
+            }
+            var started=new CountDownLatch(1);
+            var decision=pool.submit(()->{ started.countDown(); return cleanup.remoteAllowed(id,producer); });
+            assertTrue(started.await(5,TimeUnit.SECONDS));
+            try { assertThrows(TimeoutException.class,()->decision.get(200,TimeUnit.MILLISECONDS)); }
+            finally { connection.commit(); }
+            assertFalse(decision.get(10,TimeUnit.SECONDS));
+        }
+    }
+
+    @Test void uncertainPutAndLocalRestartRecoverThePersistedIntentWithoutAnotherMediaAttempt() throws Exception {
+        var request=request(); var claim=gateway.acquire(request); var running=gateway.beginMedia(request.videoId(),claim.job().token());
+        var objects=mock(ObjectStorageGateway.class); var media=mock(MediaGateway.LocalMediaResult.class);
+        Path source=Files.write(temporary.resolve("source.zip"),StorageFixtures.BYTES);
+        when(media.zip()).thenReturn(source); when(media.sizeBytes()).thenReturn((long)StorageFixtures.BYTES.length);
+        when(media.sha256()).thenReturn(StorageFixtures.hash(StorageFixtures.BYTES)); when(media.frameCount()).thenReturn(1);
+        var stored=new java.util.concurrent.atomic.AtomicBoolean();
+        when(objects.present(any(),any())).thenAnswer(inv->stored.get());
+        doAnswer(inv->{ assertEquals(1,count("processing_result_intents")); stored.set(true); throw new IOException("PUT outcome uncertain"); })
+                .when(objects).store(any(),any(),any());
+        Path root=temporary.resolve("artifacts");
+        try(var files=new LocalProcessingArtifacts(root,1)) {
+            var usecase=new StoreProcessingResult(gateway,objects,files);
+            assertThrows(IOException.class,()->usecase.publish(running,media,()->true));
+        }
+        assertEquals("RESULT_PENDING_STORAGE",jdbc.queryForObject("SELECT status FROM processing_jobs WHERE id=?",String.class,request.videoId()));
+        expire(request.videoId()); var takeover=gateway.acquire(request);
+        try(var reopened=new LocalProcessingArtifacts(root,1)) {
+            assertTrue(reopened.find(takeover.job().result(),()->true).isPresent());
+            var complete=new StoreProcessingResult(gateway,objects,reopened).recover(takeover.job(),()->true);
+            assertEquals(JobStatus.COMPLETED,complete.status()); assertEquals(1,complete.mediaAttempts());
+            assertEquals(running.token(),ResultKey.parse(complete.result().objectKey()).producer());
+            assertEquals(complete.completedAt().plusSeconds(86400),complete.expiresAt());
+        }
+        verify(objects,times(1)).store(any(),any(),any()); verify(objects,never()).deleteAbandoned(any());
+        assertEquals(JobGateway.Disposition.TERMINAL,gateway.acquire(request).disposition());
     }
 
     @Test void concurrentReceiversAcquireExactlyOneLease() throws Exception {
