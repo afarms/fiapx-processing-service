@@ -1,6 +1,6 @@
 # FIAP X — Processamento
 
-Serviço independente para processamento assíncrono de vídeos. Implementados bootstrap, probes, limites configurados e persistência transacional de jobs/tentativas/inbox/outbox, com eventos de início e resultado gravados no banco. Consumo/publicação SQS, FFmpeg, ZIP e armazenamento S3 ainda estão em implementação. Esta imagem ainda não inclui FFmpeg e não consome mensagens. Ver [contrato de persistência](docs/persistence.md).
+Serviço independente para processamento assíncrono de vídeos. Implementados bootstrap, probes, persistência transacional de jobs/tentativas/inbox/outbox e pipeline local FFprobe/FFmpeg para PNGs em ZIP, com limites durante a produção. A imagem inclui FFmpeg 8.1.2; consumo/publicação SQS e armazenamento S3 ainda estão em implementação. Ver [contrato de persistência](docs/persistence.md) e [pipeline de mídia](docs/media.md).
 
 ## Desenvolvimento local
 
@@ -18,7 +18,7 @@ Compose inicia PostgreSQL 17 e a aplicação. Banco publicado apenas em localhos
 
 Depois de `make up`, `make integration-bootstrap` verifica probes reais, interrompe somente o banco deste projeto e o restaura automaticamente. Readiness deve passar de UP para HTTP 503 e voltar a UP; liveness deve permanecer UP. O teste não acessa AWS nem remove dados/volumes.
 
-A imagem usa JDK no build e JRE no runtime, usuário não-root, filesystem raiz somente leitura e diretório de trabalho dedicado. O Dockerfile empacota com `-DskipTests`; CI executa testes/cobertura antes de construir a imagem. A CI está preparada, sem evidência de execução remota ainda.
+A imagem usa JDK no build e JRE no runtime, usuário não-root, filesystem raiz somente leitura e diretório de trabalho dedicado. O Dockerfile empacota com `-DskipTests`; CI executa testes/cobertura antes de construir a imagem. Integrações com banco e mídia são executadas separadamente, por Makefile.
 
 ## Saúde e limites
 
@@ -33,9 +33,9 @@ Sem endpoints públicos de negócio. `GET /actuator/health/liveness` informa vid
 | Reserva de disco por execução | 3 GiB |
 | Lease / heartbeat | 120 / 30 segundos |
 
-Os valores estão configurados e validados na inicialização; a imposição durante processamento será implementada com o pipeline de mídia. Configuração inválida impede inicialização, incluindo heartbeat maior ou igual ao lease ou reserva que não comporte entrada, PNGs, ZIP e margem. A reserva configurada não cria uma quota de disco por si só. O Compose limita a aplicação a 1 GiB de RAM e duas CPUs.
+O pipeline local impõe tamanho de entrada, duração decodificada, bytes agregados de PNG e ZIP e prazo compartilhado entre FFprobe/FFmpeg. Configuração inválida impede inicialização, incluindo mais de três tentativas, heartbeat maior ou igual ao lease ou reserva que não comporte entrada, PNGs, ZIP e margem. Uma execução por instância verifica espaço livre antes de iniciar; a reserva configurada não cria uma quota de filesystem. O Compose limita a aplicação a 1 GiB de RAM e duas CPUs. O consumidor futuro será responsável por admissão antes de receber trabalho e renovar a posse.
 
-Liquibase gerencia as tabelas de jobs, tentativas, inbox, intenções de resultado e outbox. Hibernate usa `validate`, nunca `update`. `make integration` verifica persistência/concorrência com PostgreSQL real em schemas isolados do banco local informado no `.env`; não acessa AWS. FFmpeg e processamento real ainda serão implementados e validados.
+Liquibase gerencia as tabelas de jobs, tentativas, inbox, intenções de resultado e outbox. Hibernate usa `validate`, nunca `update`. `make integration` verifica persistência/concorrência com PostgreSQL real em schemas isolados do banco local informado no `.env`. `make integration-media` executa testes com FFmpeg real em container limitado a 1 GiB e duas CPUs, sem depender do FFmpeg do host. Ambos são locais e não acessam AWS.
 
 ## Integração planejada
 

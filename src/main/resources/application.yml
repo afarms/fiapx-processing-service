@@ -19,6 +19,9 @@ server:
   port: ${SERVER_PORT:8082}
   shutdown: graceful
 processing:
+  temp-directory: ${PROCESSING_TEMP_DIRECTORY:/app/.local/processing}
+  ffmpeg: /usr/bin/ffmpeg
+  ffprobe: /usr/bin/ffprobe
   max-input-bytes: 100000000
   max-duration-seconds: 300
   max-extracted-bytes: ${PROCESSING_MAX_EXTRACTED_BYTES:1073741824}
