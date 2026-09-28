@@ -1,0 +1,2 @@
+# Job migrations will be added explicitly when persistence is implemented.
+databaseChangeLog: []
