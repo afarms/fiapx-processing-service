@@ -52,6 +52,7 @@ class ProcessingJobGatewayAdapterTest {
         ordered.verify(repo).finishInbox(id,NOW); ordered.verify(repo).endAttempts(id,NOW);
         ordered.verify(manager).commit(any());
         assertEquals(JobGateway.Disposition.TERMINAL,gateway.acquire(request).disposition());
+        verify(repo).rescheduleTerminal(id,terminal.version());
     }
 
     @Test void durableFailureAndVersionedEnvelopeRoundTrip() {

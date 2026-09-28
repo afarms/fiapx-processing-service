@@ -73,4 +73,12 @@ public interface SpringProcessingJobRepository extends JpaRepository<ProcessingJ
 
     @Query(value = "SELECT count(*) FROM processing_outbox WHERE job_id=:job AND event_version=:version AND event_type IN ('ProcessingCompleted','ProcessingFailed')", nativeQuery = true)
     int terminalEvents(UUID job, long version);
+
+    @Modifying
+    @Query(value = """
+        UPDATE processing_outbox SET published_at=NULL,available_at=clock_timestamp(),claim_token=NULL,claim_until=NULL
+        WHERE job_id=:job AND event_version=:version AND event_type IN ('ProcessingCompleted','ProcessingFailed')
+          AND published_at IS NOT NULL
+        """, nativeQuery = true)
+    int rescheduleTerminal(UUID job, long version);
 }
