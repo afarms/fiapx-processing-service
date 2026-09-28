@@ -1,13 +1,18 @@
 MVNW := bash ./mvnw
 ENV_FILE := $(CURDIR)/.env
 .DEFAULT_GOAL := verify
-.PHONY: verify install package image config-check up down run integration-bootstrap integration
+.PHONY: verify install package image config-check up down run integration-bootstrap integration integration-media
 
 verify:
 	$(MVNW) -B -ntp clean verify
 
 integration:
 	bash scripts/test-postgres.sh
+
+integration-media:
+	bash -c 'mkdir -p target/media-reports'
+	docker build --target media-test -t fiapx-processing-media-test:local .
+	MSYS_NO_PATHCONV=1 docker run --rm --init --cpus=2 --memory=1g --mount type=volume,source=fiapx-processing-media-maven,target=/root/.m2 --mount "type=bind,source=$(CURDIR)/target/media-reports,target=/reports" fiapx-processing-media-test:local sh -c './mvnw -B -ntp -Pmedia-integration verify; result=$$?; cp -R target/failsafe-reports target/site/jacoco /reports/; exit $$result'
 
 install:
 	$(MVNW) -B -ntp clean install

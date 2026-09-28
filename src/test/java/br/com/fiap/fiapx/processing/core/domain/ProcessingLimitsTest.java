@@ -30,6 +30,14 @@ class ProcessingLimitsTest {
     }
 
     @Test
+    void rejectsAttemptLimitsIncompatibleWithPersistence() {
+        for (long maximum : new long[]{4, Long.MAX_VALUE}) {
+            long[] values = defaults(); values[5] = maximum;
+            assertThrows(IllegalArgumentException.class, () -> limits(values));
+        }
+    }
+
+    @Test
     void acceptsAgreedLimitsWithDiskHeadroom() {
         ProcessingLimits result = limits(defaults());
         assertEquals(100_000_000, result.maxInputBytes());

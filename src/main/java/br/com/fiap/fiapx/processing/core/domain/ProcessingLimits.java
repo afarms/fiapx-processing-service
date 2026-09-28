@@ -12,6 +12,7 @@ public record ProcessingLimits(long maxInputBytes, long maxDurationSeconds,
         positive(maxZipBytes, "maxZipBytes");
         positive(timeoutSeconds, "timeoutSeconds");
         positive(maxAttempts, "maxAttempts");
+        if (maxAttempts > 3) throw new IllegalArgumentException("At most three media attempts are supported");
         positive(diskReserveBytes, "diskReserveBytes");
         positive(leaseSeconds, "leaseSeconds");
         positive(heartbeatSeconds, "heartbeatSeconds");

@@ -12,9 +12,20 @@ import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.support.TransactionTemplate;
 import tools.jackson.databind.json.JsonMapper;
+import br.com.fiap.fiapx.processing.core.gateway.MediaGateway;
+import br.com.fiap.fiapx.processing.infrastructure.media.*;
+import java.nio.file.Path;
 
 @Configuration(proxyBeanMethods = false)
 public class BeanConfig {
+    @Bean
+    MediaGateway mediaGateway(ProcessingLimits limits,
+            @Value("${processing.temp-directory}") String directory,
+            @Value("${processing.ffmpeg}") String ffmpeg,
+            @Value("${processing.ffprobe}") String ffprobe) {
+        return new FfmpegMediaGateway(limits, Path.of(directory), ffmpeg, ffprobe, new LocalMediaProcess());
+    }
+
     @Bean
     ProcessingJobMapper processingJobMapper(JsonMapper json) { return new ProcessingJobMapper(json); }
 
