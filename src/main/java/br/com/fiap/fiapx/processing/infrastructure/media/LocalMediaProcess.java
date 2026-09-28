@@ -4,6 +4,7 @@ import br.com.fiap.fiapx.processing.core.domain.*;
 import java.io.*;
 import java.util.List;
 import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /** Argument lists only. No shell or unbounded subprocess logs. */
 public final class LocalMediaProcess implements MediaProcess {
@@ -11,7 +12,16 @@ public final class LocalMediaProcess implements MediaProcess {
         budget.check();
         Process process = new ProcessBuilder(command).redirectError(ProcessBuilder.Redirect.DISCARD).start();
         try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
-            Future<?> output = executor.submit(() -> { reader.read(process.getInputStream()); return null; });
+            var ended = new AtomicBoolean();
+            var stdout = new FilterInputStream(process.getInputStream()) {
+                @Override public int read() throws IOException {
+                    int value = super.read(); if (value == -1) ended.set(true); return value;
+                }
+                @Override public int read(byte[] bytes, int offset, int length) throws IOException {
+                    int count = super.read(bytes, offset, length); if (count == -1) ended.set(true); return count;
+                }
+            };
+            Future<?> output = executor.submit(() -> { reader.read(stdout); return null; });
             try {
                 process.getOutputStream().close();
                 Throwable readerFailure = null;
@@ -24,7 +34,10 @@ public final class LocalMediaProcess implements MediaProcess {
                 if (readerFailure != null) {
                     // An OOM-killed encoder can close stdout in the middle of a PNG. Preserve
                     // the operational exit instead of misclassifying truncation as bad input.
-                    if (process.waitFor(50, TimeUnit.MILLISECONDS) && process.exitValue() == 137)
+                    // EOF can precede the OS exit notification. Wait for that notification
+                    // under the same budget instead of guessing after a fixed grace period.
+                    if (ended.get()) while (!process.waitFor(50, TimeUnit.MILLISECONDS)) budget.check();
+                    if (!process.isAlive() && process.exitValue() == 137)
                         throw new IOException("Media process terminated by resource exhaustion");
                     propagate(readerFailure);
                 }

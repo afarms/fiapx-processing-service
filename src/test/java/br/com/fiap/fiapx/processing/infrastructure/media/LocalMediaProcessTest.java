@@ -20,6 +20,7 @@ class LocalMediaProcessTest {
                 case "ok" -> System.out.print("ok");
                 case "invalid" -> System.exit(1);
                 case "oom" -> System.exit(137);
+                case "delayed-oom" -> { System.out.close(); Thread.sleep(200); System.exit(137); }
                 case "closed" -> { System.out.close(); Thread.sleep(30000); }
                 case "descendant" -> {
                     Process child = new ProcessBuilder(command("sleep")).start();
@@ -37,6 +38,9 @@ class LocalMediaProcessTest {
         assertThrows(IOException.class, () -> process.run(command("oom"), MediaFixtures.budget(), InputStream::readAllBytes));
         assertThrows(IOException.class, () -> process.run(command("oom"), MediaFixtures.budget(), in -> {
             in.readAllBytes(); throw new MediaFailure(FailureCode.INVALID_MEDIA);
+        }));
+        assertThrows(IOException.class, () -> process.run(command("delayed-oom"), MediaFixtures.budget(), in -> {
+            assertEquals(-1, in.read()); throw new MediaFailure(FailureCode.INVALID_MEDIA);
         }));
         assertThrows(IOException.class, () -> process.run(List.of("no-such-media-binary-123"), MediaFixtures.budget(), InputStream::readAllBytes));
     }
