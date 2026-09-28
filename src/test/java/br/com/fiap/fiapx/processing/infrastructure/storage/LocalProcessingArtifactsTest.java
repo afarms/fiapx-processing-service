@@ -10,6 +10,14 @@ import static org.junit.jupiter.api.Assertions.*;
 import static br.com.fiap.fiapx.processing.infrastructure.storage.StorageFixtures.*;
 
 class LocalProcessingArtifactsTest {
+    @org.junit.jupiter.api.Test void capacityRejectsClosedOrInsufficientVolume() throws Exception {
+        var root=java.nio.file.Files.createTempDirectory("processing-capacity-");
+        try {
+            try (var ample=new LocalProcessingArtifacts(root,1)) { assertTrue(ample.hasCapacity()); }
+            var full=new LocalProcessingArtifacts(root,Long.MAX_VALUE);
+            assertFalse(full.hasCapacity()); full.close(); assertFalse(full.hasCapacity());
+        } finally { java.nio.file.Files.deleteIfExists(root.resolve("instance.lock")); java.nio.file.Files.deleteIfExists(root); }
+    }
     @TempDir Path temporary;
     @Test void retainedArtifactSurvivesRestartAndCannotBeOverwritten() throws Exception {
         Path root = temporary.resolve("artifacts"), source = Files.write(temporary.resolve("source"), BYTES);

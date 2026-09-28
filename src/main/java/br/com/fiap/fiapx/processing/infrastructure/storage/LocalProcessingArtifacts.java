@@ -28,6 +28,10 @@ public final class LocalProcessingArtifacts implements LocalArtifactsGateway, Au
         if (Files.getFileStore(root).getUsableSpace() < reserve) throw new IOException("Insufficient artifact disk reservation");
         return directory(job.request().videoId(), job.token()).resolve("original");
     }
+    public synchronized boolean hasCapacity() {
+        try { ensureOpen(); return Files.getFileStore(root).getUsableSpace() >= reserve; }
+        catch (IOException failure) { return false; }
+    }
     public synchronized void retain(ResultArtifact artifact, Path source, BooleanSupplier owned) throws IOException {
         Path file = file(artifact);
         if (Files.exists(file, LinkOption.NOFOLLOW_LINKS)) { verify(file, artifact, owned); return; }
