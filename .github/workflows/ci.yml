@@ -9,7 +9,7 @@ permissions:
   contents: read
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   unit-tests:
     name: unit-tests
@@ -38,8 +38,98 @@ jobs:
     name: container-build
     needs: unit-tests
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 65
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - uses: actions/checkout@v4
       - name: Build JRE runtime image after unit tests pass
-        run: docker build --tag fiapx-processing-service:ci .
+        run: |
+          bash -n scripts/publish-image.sh
+          bash -n scripts/connect-cluster.sh
+          bash -n scripts/render-secrets.sh
+          docker build --tag fiapx-processing-service:ci .
+      - name: Validate Kubernetes manifests
+        run: |
+          set -euo pipefail
+          curl -fsSL --retry 3 https://github.com/yannh/kubeconform/releases/download/v0.7.0/kubeconform-linux-amd64.tar.gz -o "$RUNNER_TEMP/kubeconform.tar.gz"
+          echo "c31518ddd122663b3f3aa874cfe8178cb0988de944f29c74a0b9260920d115d3  $RUNNER_TEMP/kubeconform.tar.gz" | sha256sum --check
+          tar -xzf "$RUNNER_TEMP/kubeconform.tar.gz" -C "$RUNNER_TEMP" kubeconform
+          "$RUNNER_TEMP/kubeconform" -strict -summary -kubernetes-version 1.35.0 k8s/
+      - name: Authenticate delivery using OIDC
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: us-east-1
+          mask-aws-account-id: true
+          role-session-name: fiapx-processing-service-${{ github.run_id }}
+
+      - name: Install deployment tools
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          set -euo pipefail
+          curl -fsSL --retry 3 https://dl.k8s.io/release/v1.35.3/bin/linux/amd64/kubectl -o "$RUNNER_TEMP/kubectl"
+          echo "fd31c7d7129260e608f6faf92d5984c3267ad0b5ead3bced2fe125686e286ad6  $RUNNER_TEMP/kubectl" | sha256sum --check
+          sudo install -m 0755 "$RUNNER_TEMP/kubectl" /usr/local/bin/kubectl
+          curl -fsSL --retry 3 https://s3.amazonaws.com/session-manager-downloads/plugin/latest/ubuntu_64bit/session-manager-plugin.deb -o "$RUNNER_TEMP/ssm.deb"
+          sudo dpkg -i "$RUNNER_TEMP/ssm.deb"
+          sudo apt-get update -qq
+          sudo apt-get install -y gettext-base
+      - name: Check current main
+        id: revision
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          current=$(git ls-remote origin refs/heads/main | cut -f1)
+          if [[ "$current" == "$GITHUB_SHA" ]]; then
+            echo "current=true" >> "$GITHUB_OUTPUT"
+          else
+            echo 'Newer main exists; skipping obsolete delivery.'
+          fi
+      - name: Publish immutable commit image
+        if: steps.revision.outputs.current == 'true'
+        run: bash scripts/publish-image.sh
+      - name: Connect runner to private Kubernetes API
+        if: steps.revision.outputs.current == 'true'
+        env:
+          ADMIN_INSTANCE_ID: ${{ vars.ADMIN_INSTANCE_ID }}
+        run: bash scripts/connect-cluster.sh
+      - name: Apply Kubernetes manifests and wait for rollout
+        if: steps.revision.outputs.current == 'true'
+        env:
+          DB_HOST: ${{ vars.DB_HOST }}
+          MEDIA_BUCKET_NAME: ${{ vars.MEDIA_BUCKET_NAME }}
+          PROCESSING_QUEUE_URL: ${{ vars.PROCESSING_QUEUE_URL }}
+          VIDEOS_EVENTS_QUEUE_URL: ${{ vars.VIDEOS_EVENTS_QUEUE_URL }}
+        run: |
+          set -euo pipefail
+          service="${GITHUB_REPOSITORY##*/}"
+          current=$(git ls-remote origin refs/heads/main | cut -f1)
+          [[ "$current" == "$GITHUB_SHA" ]] || { echo 'Newer main exists; skipping rollout.'; exit 0; }
+          previous=$(kubectl -n fiapx get deployment "$service" --ignore-not-found -o json | jq -r '.metadata.annotations["fiapx/release-sequence"] // "0"')
+          previous="${previous:-0}"
+          (( GITHUB_RUN_ID >= previous )) || { echo 'Obsolete release refused.'; exit 1; }
+          : "${DB_HOST:?}" "${IMAGE_REF:?}"
+          if [[ "$service" != fiapx-identity-service ]]; then
+            : "${MEDIA_BUCKET_NAME:?}" "${PROCESSING_QUEUE_URL:?}" "${VIDEOS_EVENTS_QUEUE_URL:?}"
+          fi
+          export RDS_CA_B64
+          RDS_CA_B64=$(curl -fsSL --retry 3 https://truststore.pki.rds.amazonaws.com/us-east-1/us-east-1-bundle.pem | base64 -w0)
+          # Secrets are rendered only in memory; no files or last-applied annotation.
+          bash scripts/render-secrets.sh | kubectl apply --server-side --field-manager=fiapx-delivery -f - >/dev/null 2>/dev/null
+          kubectl apply --server-side --field-manager=fiapx-delivery -f k8s/serviceaccount.yaml
+          envsubst '${DB_HOST} ${MEDIA_BUCKET_NAME} ${PROCESSING_QUEUE_URL} ${VIDEOS_EVENTS_QUEUE_URL} ${RDS_CA_B64}' < k8s/configmap.yaml | kubectl apply --server-side --field-manager=fiapx-delivery -f -
+          envsubst '${IMAGE_REF} ${GITHUB_SHA} ${GITHUB_RUN_ID}' < k8s/deployment.yaml | kubectl apply --server-side --field-manager=fiapx-delivery -f -
+          kubectl apply --server-side --field-manager=fiapx-delivery -f k8s/service.yaml -f k8s/hpa.yaml
+          kubectl -n fiapx rollout status "deployment/$service" --timeout=600s
+          kubectl -n fiapx get hpa "$service"
+      - name: Close private API tunnel
+        if: always()
+        run: |
+          if [[ -f "$RUNNER_TEMP/fiapx-tunnel.log" ]]; then
+            session=$(awk '/Starting session with SessionId:/ {print $NF; exit}' "$RUNNER_TEMP/fiapx-tunnel.log" | tr -d '\r')
+            if [[ -n "$session" ]]; then aws ssm terminate-session --session-id "$session" >/dev/null || true; fi
+          fi
+          if [[ -n "${TUNNEL_PID:-}" ]]; then kill "$TUNNEL_PID" 2>/dev/null || true; fi
+          rm -f "$RUNNER_TEMP/fiapx-kubeconfig" "$RUNNER_TEMP/fiapx-tunnel.log"
