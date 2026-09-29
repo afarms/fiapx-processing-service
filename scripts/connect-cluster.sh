@@ -1,6 +1,13 @@
 #!/bin/bash
 set -euo pipefail
-: "${ADMIN_INSTANCE_ID:?}"
+if [[ -z "${ADMIN_INSTANCE_ID:-}" ]]; then
+  echo '::error::ADMIN_INSTANCE_ID não configurada. No repositório GitHub, acesse Settings > Secrets and variables > Actions > Variables e informe o ID da EC2 de administração (i-...). Consulte o output application_delivery do Terraform.'
+  exit 1
+fi
+if [[ ! "$ADMIN_INSTANCE_ID" =~ ^i-([0-9a-f]{8}|[0-9a-f]{17})$ ]]; then
+  echo '::error::ADMIN_INSTANCE_ID inválida. Informe somente o ID da EC2 de administração (i-...), sem espaços, nome ou ARN, em Settings > Secrets and variables > Actions > Variables.'
+  exit 1
+fi
 endpoint=$(aws eks describe-cluster --name fiapx --query cluster.endpoint --output text)
 cluster=$(aws eks describe-cluster --name fiapx --query cluster.arn --output text)
 export KUBECONFIG="$RUNNER_TEMP/fiapx-kubeconfig"
@@ -12,7 +19,7 @@ aws ssm start-session --target "$ADMIN_INSTANCE_ID" --document-name fiapx-eks-tu
 tunnel_pid=$!
 printf 'TUNNEL_PID=%s\n' "$tunnel_pid" >> "$GITHUB_ENV"
 for ((attempt=0; attempt<30; attempt++)); do
-  kill -0 "$tunnel_pid" 2>/dev/null || { echo 'SSM tunnel stopped; inspect IAM and instance health.'; exit 1; }
+  kill -0 "$tunnel_pid" 2>/dev/null || { echo '::error::Não foi possível abrir o túnel SSM. Confira se ADMIN_INSTANCE_ID aponta para a EC2 de administração atual, ligada e online no Systems Manager, na região configurada. Se a instância foi substituída, atualize a variável no GitHub. Verifique também as permissões IAM da role de deploy.'; exit 1; }
   if kubectl get services -n fiapx --request-timeout=5s >/dev/null 2>&1; then exit 0; fi
   sleep 2
 done
