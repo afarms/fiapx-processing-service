@@ -1,0 +1,116 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fiapx-processing-service
+  namespace: fiapx
+  annotations:
+    fiapx/commit: "${GITHUB_SHA}"
+    fiapx/release-sequence: "${GITHUB_RUN_ID}"
+spec:
+  # HPA owns replicas; applying manifests must not reset its decision.
+  revisionHistoryLimit: 3
+  progressDeadlineSeconds: 600
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: fiapx-processing-service
+  template:
+    metadata:
+      labels:
+        app: fiapx-processing-service
+      annotations:
+        fiapx/commit: "${GITHUB_SHA}"
+        fiapx/release-sequence: "${GITHUB_RUN_ID}"
+    spec:
+      serviceAccountName: fiapx-processing-service
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 60
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: application
+          image: "${IMAGE_REF}"
+          ports:
+            - name: http
+              containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: fiapx-processing-service
+          env:
+            - name: DB_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: fiapx-processing-service
+                  key: DB_USERNAME
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: fiapx-processing-service
+                  key: DB_PASSWORD
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "768Mi"
+              ephemeral-storage: "6Gi"
+            limits:
+              cpu: "2"
+              memory: "1536Mi"
+              ephemeral-storage: "7Gi"
+          startupProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 48
+          readinessProbe:
+            httpGet:
+              path: /actuator/health/readiness
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 3
+          livenessProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 3
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: scratch
+              mountPath: /app/.local
+            - name: ca
+              mountPath: /etc/fiapx/ca
+              readOnly: true
+            - name: credentials
+              mountPath: /etc/fiapx/credentials
+              readOnly: true
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 256Mi
+        - name: scratch
+          emptyDir:
+            sizeLimit: 6Gi
+        - name: ca
+          configMap:
+            name: fiapx-processing-service-ca
+        - name: credentials
+          secret:
+            secretName: fiapx-processing-service
+            defaultMode: 0440

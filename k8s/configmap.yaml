@@ -1,0 +1,23 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: fiapx-processing-service
+  namespace: fiapx
+data:
+  AWS_REGION: "us-east-1"
+  SERVER_PORT: "8080"
+  DB_URL: "jdbc:postgresql://${DB_HOST}:5432/fiapx_processing?sslmode=verify-full&sslrootcert=/etc/fiapx/ca/rds-ca.pem"
+  JAVA_TOOL_OPTIONS: "-XX:MaxRAMPercentage=65.0 -Djava.io.tmpdir=/tmp"
+  PROCESSING_STORAGE_ENABLED: "true"
+  PROCESSING_MESSAGING_ENABLED: "true"
+  PROCESSING_MEDIA_BUCKET: "${MEDIA_BUCKET_NAME}"
+  PROCESSING_WORK_QUEUE_URL: "${PROCESSING_QUEUE_URL}"
+  PROCESSING_RESULT_QUEUE_URL: "${VIDEOS_EVENTS_QUEUE_URL}"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: fiapx-processing-service-ca
+  namespace: fiapx
+binaryData:
+  rds-ca.pem: "${RDS_CA_B64}"
